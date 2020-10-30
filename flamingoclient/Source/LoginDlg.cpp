@@ -9,11 +9,14 @@
 #include "Path.h"
 #include "UserSessionData.h"
 #include "GDIFactory.h"
+#include "EncodeUtil.h"
+#include "IULog.h"
+#include "net/Msg.h"
 
 
-CLoginDlg::CLoginDlg(void)
+CLoginDlg::CLoginDlg(CFlamingoClient* pFMGClient)
 {
-	m_lpFMGClient = NULL;
+    m_lpFMGClient = pFMGClient;
 	m_pLoginAccountList = NULL;
 	m_hDlgIcon = m_hDlgSmallIcon = NULL;
 	memset(&m_stAccountInfo, 0, sizeof(m_stAccountInfo));
@@ -31,6 +34,15 @@ BOOL CLoginDlg::GetLoginAccountInfo(LOGIN_ACCOUNT_INFO* lpAccount)
 
 	memcpy(lpAccount, &m_stAccountInfo, sizeof(LOGIN_ACCOUNT_INFO));
 	return TRUE;
+}
+
+BOOL CLoginDlg::SetLoginAccountInfo(const LOGIN_ACCOUNT_INFO* lpAccount)
+{
+    if (NULL == lpAccount)
+        return FALSE;
+
+    memcpy(&m_stAccountInfo, lpAccount, sizeof(LOGIN_ACCOUNT_INFO));
+    return TRUE;
 }
 
 void CLoginDlg::SetDefaultAccount(PCTSTR pszDefaultAccount)
@@ -197,6 +209,8 @@ void CLoginDlg::OnBtn_Login(UINT uNotifyCode, int nID, CWindow wndCtl)
 	// 记录当前用户信息
 	m_lpFMGClient->m_UserMgr.m_UserInfo.m_strAccount = m_stAccountInfo.szUser;
 
+    DoLogin();
+
 	EndDialog(IDOK);
 }
 
@@ -265,7 +279,8 @@ BOOL CLoginDlg::InitUI()
 	m_SkinDlg.SetMinSysBtnPic(_T("SysBtn\\btn_mini_normal.png"), _T("SysBtn\\btn_mini_highlight.png"), _T("SysBtn\\btn_mini_down.png"));
 	m_SkinDlg.SetCloseSysBtnPic(_T("SysBtn\\btn_close_normal.png"), _T("SysBtn\\btn_close_highlight.png"), _T("SysBtn\\btn_close_down.png"));
 	m_SkinDlg.SubclassWindow(m_hWnd);
-	m_SkinDlg.MoveWindow(0, 0, 550, 380, FALSE);
+	//m_SkinDlg.MoveWindow(0, 0, 550, 380, FALSE);
+    m_SkinDlg.MoveWindow(0, 0, 550, 350, FALSE);
 	m_SkinDlg.SetTitleText(_T(""));
 
 
@@ -325,7 +340,7 @@ BOOL CLoginDlg::InitUI()
 	m_lnkRegAccount.SubclassWindow(GetDlgItem(ID_STATIC_REG_ACCOUNT));
 	m_lnkRegAccount.SetLabel(_T("注册账号"));
 	//m_lnkRegAccount.SetLinkType(SKIN_LINK_REGISTER);
-	//m_lnkRegAccount.SetHyperLink(_T("http://zc.UTalk.com/chs/index.html?from=client&ptlang=2052&ADUIN=0&ADSESSION=0&ADTAG=CLIENT.UTalk.4153_NewAccount_Btn.0"));
+	//m_lnkRegAccount.SetHyperLink(_T("http://zc.flamingo.com/chs/index.html?from=client&ptlang=2052&ADUIN=0&ADSESSION=0&ADTAG=CLIENT.UTalk.4153_NewAccount_Btn.0"));
 	m_lnkRegAccount.SetToolTipText(_T("注册账号"));
 	m_lnkRegAccount.MoveWindow(385, 170, 80, 15, FALSE);
 	m_lnkRegAccount.GetClientRect(&rtWindow);
@@ -340,7 +355,7 @@ BOOL CLoginDlg::InitUI()
 	m_lnkLostPwd.SetVisitedLinkColor(RGB(22, 112, 235));
 	m_lnkLostPwd.SubclassWindow(GetDlgItem(ID_STATIC_LOST_PWD));
 	m_lnkLostPwd.SetLabel(_T("找回密码"));
-	//m_lnkLostPwd.SetHyperLink(_T("http://aq.UTalk.com/cn2/findpsw/findpsw_index?source_id=1003&ptlang=2052&aquin=123456"));
+	//m_lnkLostPwd.SetHyperLink(_T("http://aq.flamingo.com/cn2/findpsw/findpsw_index?source_id=1003&ptlang=2052&aquin=123456"));
 	//m_lnkLostPwd.SetToolTipText(_T("找回密码"));
 	m_lnkLostPwd.MoveWindow(385, 215, 80, 15, FALSE);
 	m_lnkLostPwd.GetClientRect(&rtWindow);
@@ -557,6 +572,74 @@ void CLoginDlg::SetCurUser(LPCTSTR lpszUser, BOOL bPwdInvalid/* = FALSE*/)
 	}
 }
 
+UINT CLoginDlg::LoginThreadProc(void* pParam)
+{
+    CLoginDlg* pLoginDlg = (CLoginDlg*)pParam;
+    if (pLoginDlg == NULL)
+        return 0;
+
+    char szUser[64] = { 0 };
+    EncodeUtil::UnicodeToUtf8(pLoginDlg->m_stAccountInfo.szUser, szUser, ARRAYSIZE(szUser));
+    char szPassword[64] = { 0 };
+    EncodeUtil::UnicodeToUtf8(pLoginDlg->m_stAccountInfo.szPwd, szPassword, ARRAYSIZE(szPassword));
+
+    std::string strReturnData;
+    //超时时间设置为3秒
+    bool bRet = CIUSocket::GetInstance().Login(szUser, szPassword, 1, online_type_pc_online, 3, strReturnData);
+    int nRet = LOGIN_FAILED;
+    CLoginResult* pLoginResult = new CLoginResult();
+    pLoginResult->m_LoginResultCode = LOGIN_FAILED;
+    if (bRet)
+    {
+        //{"code": 0, "msg": "ok", "userid": 8}
+        Json::Reader JsonReader;
+        Json::Value JsonRoot;
+        if (JsonReader.parse(strReturnData, JsonRoot) && !JsonRoot["code"].isNull() && JsonRoot["code"].isInt())
+        {
+            int nRetCode = JsonRoot["code"].asInt();
+
+            if (nRetCode == 0)
+            {
+                if (!JsonRoot["userid"].isInt() || !JsonRoot["username"].isString() || !JsonRoot["nickname"].isString() ||
+                    !JsonRoot["facetype"].isInt() || !JsonRoot["gender"].isInt() || !JsonRoot["birthday"].isInt() ||
+                    !JsonRoot["signature"].isString() || !JsonRoot["address"].isString() ||
+                    !JsonRoot["customface"].isString() || !JsonRoot["phonenumber"].isString() ||
+                    !JsonRoot["mail"].isString())
+                {
+                    LOG_ERROR(_T("login failed, login response json is invalid, json=%s"), strReturnData.c_str());
+                    pLoginResult->m_LoginResultCode = LOGIN_FAILED;
+                }
+                else
+                {
+                    pLoginResult->m_LoginResultCode = 0;
+                    pLoginResult->m_uAccountID = JsonRoot["userid"].asInt();
+                    strcpy_s(pLoginResult->m_szAccountName, ARRAYSIZE(pLoginResult->m_szAccountName), JsonRoot["username"].asCString());
+                    strcpy_s(pLoginResult->m_szNickName, ARRAYSIZE(pLoginResult->m_szNickName), JsonRoot["nickname"].asCString());
+                    //pLoginResult->m_nStatus = JsonRoot["status"].asInt();
+                    pLoginResult->m_nFace = JsonRoot["facetype"].asInt();
+                    pLoginResult->m_nGender = JsonRoot["gender"].asInt();
+                    pLoginResult->m_nBirthday = JsonRoot["birthday"].asInt();
+                    strcpy_s(pLoginResult->m_szSignature, ARRAYSIZE(pLoginResult->m_szSignature), JsonRoot["signature"].asCString());
+                    strcpy_s(pLoginResult->m_szAddress, ARRAYSIZE(pLoginResult->m_szAddress), JsonRoot["address"].asCString());
+                    strcpy_s(pLoginResult->m_szCustomFace, ARRAYSIZE(pLoginResult->m_szCustomFace), JsonRoot["customface"].asCString());
+                    strcpy_s(pLoginResult->m_szPhoneNumber, ARRAYSIZE(pLoginResult->m_szPhoneNumber), JsonRoot["phonenumber"].asCString());
+                    strcpy_s(pLoginResult->m_szMail, ARRAYSIZE(pLoginResult->m_szMail), JsonRoot["mail"].asCString());
+                }
+            }
+            else if (nRetCode == 102)
+                pLoginResult->m_LoginResultCode = LOGIN_UNREGISTERED;
+            else if (nRetCode == 103)
+                pLoginResult->m_LoginResultCode = LOGIN_PASSWORD_ERROR;
+            else
+                pLoginResult->m_LoginResultCode = LOGIN_FAILED;
+        }    
+    }
+    //m_lpUserMgr为野指针
+    ::PostMessage(pLoginDlg->m_lpFMGClient->m_UserMgr.m_hProxyWnd, FMG_MSG_LOGIN_RESULT, 0, (LPARAM)pLoginResult);
+
+    return 1;
+}
+
 void CLoginDlg::UninitUI()
 {
 	if (m_cboUid.IsWindow())
@@ -626,4 +709,11 @@ void CLoginDlg::StatusMenuBtn_SetIconPic(CSkinButton& btnStatus, long nStatus)
 
 	btnStatus.SetIconPic(lpszFileName);
 	btnStatus.Invalidate();
+}
+
+void CLoginDlg::DoLogin()
+{
+    HANDLE hLoginThread = (HANDLE)::_beginthreadex(NULL, 0, LoginThreadProc, this, 0, NULL);
+    if (hLoginThread != NULL)
+        ::CloseHandle(hLoginThread);
 }

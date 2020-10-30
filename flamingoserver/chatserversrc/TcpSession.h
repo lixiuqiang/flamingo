@@ -6,7 +6,7 @@
 #pragma once
 
 #include <memory>
-#include "../net/tcpconnection.h"
+#include "../net/TcpConnection.h"
 
 using namespace net;
 
@@ -14,20 +14,30 @@ using namespace net;
 class TcpSession
 {
 public:
-    TcpSession(const std::shared_ptr<TcpConnection>& conn);
+    TcpSession(const std::weak_ptr<TcpConnection>& tmpconn);
     ~TcpSession();
 
     TcpSession(const TcpSession& rhs) = delete;
     TcpSession& operator =(const TcpSession& rhs) = delete;
 
-    std::shared_ptr<TcpConnection> GetConnectionPtr()
+    std::shared_ptr<TcpConnection> getConnectionPtr()
     {
+        if (tmpConn_.expired())
+            return NULL;
+
         return tmpConn_.lock();
     }
 
-    void Send(const std::string& buf);
-    void Send(const char* p, int length);
+    void send(int32_t cmd, int32_t seq, const std::string& data);
+    void send(int32_t cmd, int32_t seq, const char* data, int32_t dataLength);
+    void send(const std::string& p);
+    void send(const char* p, int32_t length);
+
+private:
+    void sendPackage(const char* p, int32_t length);
 
 protected:
+    //TcpSession引用TcpConnection类必须是弱指针，因为TcpConnection可能会因网络出错自己销毁，此时TcpSession应该也要销毁
     std::weak_ptr<TcpConnection>    tmpConn_;
+    //std::shared_ptr<TcpConnection>    tmpConn_;
 };

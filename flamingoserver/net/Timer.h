@@ -2,44 +2,38 @@
 
 #include <atomic>
 #include <stdint.h>
-#include "../base/timestamp.h"
-#include "../net/callbacks.h"
+#include "../base/Timestamp.h"
+#include "../net/Callbacks.h"
 
 namespace net
-{
+{ 
     ///
     /// Internal class for timer event.
     ///
     class Timer
     {
     public:
-        Timer(const TimerCallback& cb, Timestamp when, double interval)
-            : callback_(cb),
-            expiration_(when),
-            interval_(interval),
-            repeat_(interval > 0.0),
-            sequence_(++s_numCreated_)
-        { }
+        Timer(const TimerCallback& cb, Timestamp when, int64_t interval, int64_t repeatCount = -1);           
+        Timer(TimerCallback&& cb, Timestamp when, int64_t interval);
 
+        void run();
+        
 
-        Timer(TimerCallback&& cb, Timestamp when, double interval)
-            : callback_(std::move(cb)),
-            expiration_(when),
-            interval_(interval),
-            repeat_(interval > 0.0),
-            sequence_(++s_numCreated_)
-        { }
-
-        void run() const
+        bool isCanceled() const
         {
-            callback_();
+            return canceled_;
         }
 
-        Timestamp expiration() const  { return expiration_; }
-        bool repeat() const { return repeat_; }
+        void cancel(bool off)
+        {
+            canceled_ = off;
+        }
+
+        Timestamp expiration() const { return expiration_; }
+        int64_t getRepeatCount() const { return repeatCount_; }
         int64_t sequence() const { return sequence_; }
 
-        void restart(Timestamp now);
+        //void restart(Timestamp now);
 
         static int64_t numCreated() { return s_numCreated_; }
 
@@ -49,13 +43,13 @@ namespace net
         Timer& operator=(const Timer& rhs) = delete;
 
     private:
-        const TimerCallback callback_;
-        Timestamp expiration_;
-        const double interval_;
-        const bool repeat_;
-        const int64_t sequence_;
+        const TimerCallback         callback_;
+        Timestamp                   expiration_;
+        const int64_t               interval_;
+        int64_t                     repeatCount_;       //重复次数，-1 表示一直重复下去
+        const int64_t               sequence_;
+        bool                        canceled_;          //是否处于取消状态
 
         static std::atomic<int64_t> s_numCreated_;
     };
 }
-

@@ -1,9 +1,13 @@
 //协议及状态常量
 
 #pragma once
+#include <stdint.h>
 #include <set>
 #include <list>
-#include <stdint.h>
+#include <map>
+#include <string>
+
+#define DEFAULT_TEAMNAME _T("My Friends")
 
 //客户端类型
 enum CLIENT_TYPE
@@ -40,7 +44,6 @@ enum LOGIN_TYPE
 {
 	LOGIN_USE_MOBILE_NUMBER = 0,	//使用手机号登录
 	LOGIN_USE_ACCOUNT		= 1,	//使用账号登录
-	LOGIN_USE_UTS_ACCOUNT	= 2		//使用中间件账号登录
 };
 
 enum LOGIN_RESULT_CODE	// 登录结果代码
@@ -158,6 +161,7 @@ struct UserBasicInfo
 	UINT  uAccountID;
 	char  szAccountName[32];
 	char  szNickName[64];
+    char  szMarkName[64];
     char  szSignature[256];
     char  szAddress[51225];
 	UINT  uFaceID;
@@ -269,6 +273,9 @@ enum NET_DATA_TYPE
 	NET_DATA_TARGET_INFO_CHANGE,
 	NET_DATA_MODIFY_PASSWORD,
 	NET_DATA_CREATE_NEW_GROUP,
+    NET_DATA_OPERATE_TEAM,              //添加新的好友分组
+    NET_DATA_MODIFY_FRIEND_MARKNAME,    //修改好友备注名
+    NET_DATA_MOVE_FRIEND,               //移动好友至其他分组
 
 	NET_DATA_FILE
 };
@@ -358,7 +365,8 @@ public:
 	~CUserBasicInfoResult();
 
 public:
-	std::list<UserBasicInfo*> m_listUserBasicInfo;
+    //key是分组的名字，value是该组好友的集合
+	std::map<std::string, std::list<UserBasicInfo*>> m_mapUserBasicInfo;
 };
 
 class CChangeUserStatusRequest : public CNetData
@@ -442,6 +450,7 @@ public:
 public:
 	UINT	m_uAccountID;
 	long	m_nStatus;
+    long    m_nClientType;
     int     m_type;
 };
 
@@ -491,6 +500,40 @@ public:
 	UINT m_uCmd;
 	char m_szAccountName[64];
 	char m_szNickName[64];
+};
+
+class CAddTeamInfoRequest : public CNetData
+{
+public:
+    CAddTeamInfoRequest();
+    ~CAddTeamInfoRequest();
+
+public:
+    int          m_opType;          //操作类型
+    std::wstring m_strNewTeamName;
+    std::wstring m_strOldTeamName;  
+};
+
+class CAddTeamInfoResult : public CNetData
+{
+public:
+    CAddTeamInfoResult();
+    ~CAddTeamInfoResult();
+
+public:
+    int          m_opType;          //操作类型  
+};
+
+class CMoveFriendRequest : public CNetData
+{
+public:
+    CMoveFriendRequest();
+    ~CMoveFriendRequest();
+
+public:
+    int          m_nFriendID;          //操作类型
+    std::wstring m_strNewTeamName;
+    std::wstring m_strOldTeamName;
 };
 
 class CMsgItem;
@@ -583,6 +626,30 @@ public:
 	char	m_szAccount[32];
 };
 
+//class CModifyFriendMakeNameRequest
+class CModifyFriendMakeNameRequest : public CNetData
+{
+public:
+    CModifyFriendMakeNameRequest();
+    ~CModifyFriendMakeNameRequest();
+
+public:
+    UINT	m_uFriendID;
+    TCHAR   m_szNewMarkName[64];
+};
+
+//class CModifyFriendMakeNameResult
+class CModifyFriendMakeNameResult : public CNetData
+{
+public:
+    CModifyFriendMakeNameResult();
+    ~CModifyFriendMakeNameResult();
+
+public:
+    UINT	m_uFriendID;
+    //char	m_szNewMarkName[64];
+};
+
 class CHeartbeatMessageRequest : public CNetData
 {
 public:
@@ -647,6 +714,18 @@ public:
 public:
 	UINT m_uAccountID;
 
+};
+
+class CScreenshotInfo
+{
+public:
+    CScreenshotInfo();
+    ~CScreenshotInfo();
+
+public:
+    std::string m_strBmpHeader;
+    std::string m_strBmpData;
+    UINT        m_targetId;
 };
 
 

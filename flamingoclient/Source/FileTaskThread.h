@@ -8,13 +8,12 @@ class CIUProtocol;
 class CFileItemRequest;
 class CFlamingoClient;
 class CUploadFileResult;
-class CIUSocket;
 
 //TODO: 后面改成
 class CFileTaskThread : public CThread
 {
 public:
-	CFileTaskThread(CIUSocket* sockeClient);
+	CFileTaskThread();
 	virtual ~CFileTaskThread(void);
 
 public:
@@ -36,7 +35,7 @@ protected:
 private:
     long UploadFile(PCTSTR pszFileName, HWND hwndReflection, HANDLE hCancelEvent, CUploadFileResult& uploadFileResult);
 	void FillUploadFileResult(CUploadFileResult& uploadFileResult, PCTSTR pszLocalName, PCSTR pszRemoteName, int64_t nFileSize, char* pszMd5);
-    long DownloadFile3(LPCSTR lpszFileName, LPCTSTR lpszDestPath, BOOL bOverwriteIfExist, HWND hwndReflection, HANDLE hCancelEvent);
+    long DownloadFile(LPCSTR lpszFileName, LPCTSTR lpszDestPath, BOOL bOverwriteIfExist, HWND hwndReflection, HANDLE hCancelEvent);
     
 public:
 	CIUProtocol*					m_pProtocol;
@@ -47,6 +46,5 @@ private:
 	std::list<CFileItemRequest*>	m_Filelist;	
 	std::mutex						m_mtItems;
 	std::condition_variable			m_cvItems;
-    CIUSocket*                      m_SocketClient;
     int32_t                         m_seq;
 };

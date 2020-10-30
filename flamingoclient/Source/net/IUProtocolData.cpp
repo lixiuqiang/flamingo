@@ -181,6 +181,7 @@ CFriendStatus::CFriendStatus()
 	m_uType = NET_DATA_FRIENDS_STATUS;
 	m_uAccountID = 0;
 	m_nStatus = 0;
+    m_nClientType = 0;
     m_type = 0;
 }
 
@@ -239,6 +240,30 @@ COperateFriendResult::COperateFriendResult()
 }
 
 COperateFriendResult::~COperateFriendResult()
+{
+
+}
+
+//class CAddTeamInfoRequest
+CAddTeamInfoRequest::CAddTeamInfoRequest()
+{
+    m_uType = NET_DATA_OPERATE_TEAM;
+    m_opType = -1;
+}
+
+CAddTeamInfoRequest::~CAddTeamInfoRequest()
+{
+
+}
+
+//class CMoveFriendRequest
+CMoveFriendRequest::CMoveFriendRequest()
+{
+    m_uType = NET_DATA_MOVE_FRIEND;
+    m_nFriendID = -1;
+}
+
+CMoveFriendRequest::~CMoveFriendRequest()
 {
 
 }
@@ -340,6 +365,28 @@ CCreateNewGroupResult::~CCreateNewGroupResult()
 {
 }
 
+//class CModifyFriendMakeNameRequest
+CModifyFriendMakeNameRequest::CModifyFriendMakeNameRequest()
+{
+    m_uType = NET_DATA_MODIFY_FRIEND_MARKNAME;
+    m_uFriendID = -1;
+    memset(m_szNewMarkName, 0, sizeof(m_szNewMarkName));
+}
+
+CModifyFriendMakeNameRequest::~CModifyFriendMakeNameRequest()
+{
+
+}
+
+//class CModifyFriendMakeNameResult
+CModifyFriendMakeNameResult::CModifyFriendMakeNameResult()
+{
+}
+
+CModifyFriendMakeNameResult::~CModifyFriendMakeNameResult()
+{
+}
+
 //class CHeartbeatMessageRequest
 CHeartbeatMessageRequest::CHeartbeatMessageRequest()
 {
@@ -414,6 +461,17 @@ CTargetInfoChangeResult::CTargetInfoChangeResult()
 CTargetInfoChangeResult::~CTargetInfoChangeResult()
 {
 
+}
+
+//class CScreenshot
+CScreenshotInfo::CScreenshotInfo() : m_targetId(0)
+{
+
+}
+
+CScreenshotInfo::~CScreenshotInfo()
+{
+    
 }
 
 //class CFileItemRequest

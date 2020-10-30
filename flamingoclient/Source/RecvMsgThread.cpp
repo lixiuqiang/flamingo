@@ -1,18 +1,16 @@
-#include "stdafx.h"
+ï»¿#include "stdafx.h"
 #include "RecvMsgThread.h"
 #include <assert.h>
 #include "net/IUProtocolData.h"
 #include "net/protocolstream.h"
 #include "net/Msg.h"
 #include "File.h"
-#include "EncodingUtil.h"
+#include "EncodeUtil.h"
 #include "Path.h"
 #include "FlamingoClient.h"
 #include "IULog.h"
 
-using namespace balloon;
-
-// "/f["ÏµÍ³±íÇéid"] /c["×Ô¶¨Òå±íÇéÎÄ¼şÃû"] /o[×ÖÌåÃû³Æ£¬´óĞ¡£¬ÑÕÉ«£¬¼Ó´Ö£¬ÇãĞ±£¬ÏÂ»®Ïß]"
+// "/f["ç³»ç»Ÿè¡¨æƒ…id"] /c["è‡ªå®šä¹‰è¡¨æƒ…æ–‡ä»¶å"] /o[å­—ä½“åç§°ï¼Œå¤§å°ï¼Œé¢œè‰²ï¼ŒåŠ ç²—ï¼Œå€¾æ–œï¼Œä¸‹åˆ’çº¿]"
 tstring FormatContent(std::vector<CContent*>& arrContent)
 {
 	LPCTSTR lpFontFmt = _T("/o[\"%s,%d,%s,%d,%d,%d\"]");
@@ -85,7 +83,7 @@ tstring FormatContent(std::vector<CContent*>& arrContent)
 
 		case CONTENT_TYPE_FILE:
 			{
-				strMsg += _T("·¢ËÍÎÄ¼ş£º[");
+				strMsg += _T("å‘é€æ–‡ä»¶ï¼š[");
 				memset(cBuf, 0, sizeof(cBuf));
 				wsprintf(cBuf, lpFileFmt, lpContent->m_CFaceInfo.m_strFileName.c_str());
 				strMsg += cBuf;
@@ -108,7 +106,7 @@ BOOL CreateMsgLogFile(CMessageLogger& msgLogger, const tstring& strFileName)
 	return msgLogger.CreateMsgLogFile();
 }
 
-// Ğ´ÈëÒ»ÌõºÃÓÑÏûÏ¢¼ÇÂ¼
+// å†™å…¥ä¸€æ¡å¥½å‹æ¶ˆæ¯è®°å½•
 void WriteBuddyMsgLog(CUserMgr* lpUserMgr, UINT nUTalkNum, 
 					  LPCTSTR lpNickName, BOOL bSelf, CBuddyMessage* lpMsg)
 {
@@ -133,7 +131,7 @@ void WriteBuddyMsgLog(CUserMgr* lpUserMgr, UINT nUTalkNum,
 	lpUserMgr->m_MsgLogger.UnLock();
 }
 
-// Ğ´ÈëÒ»ÌõÈºÏûÏ¢¼ÇÂ¼
+// å†™å…¥ä¸€æ¡ç¾¤æ¶ˆæ¯è®°å½•
 void WriteGroupMsgLog(CUserMgr* lpUserMgr, UINT nGroupNum, UINT nUTalkNum, 
 					  LPCTSTR lpNickName, CBuddyMessage* lpMsg)
 {
@@ -158,7 +156,7 @@ void WriteGroupMsgLog(CUserMgr* lpUserMgr, UINT nGroupNum, UINT nUTalkNum,
 	lpUserMgr->m_MsgLogger.UnLock();
 }
 
-// Ğ´ÈëÒ»ÌõÁÙÊ±»á»°(Èº³ÉÔ±)ÏûÏ¢¼ÇÂ¼
+// å†™å…¥ä¸€æ¡ä¸´æ—¶ä¼šè¯(ç¾¤æˆå‘˜)æ¶ˆæ¯è®°å½•
 void WriteSessMsgLog(CUserMgr* lpUserMgr, UINT nUTalkNum, 
 					 LPCTSTR lpNickName, BOOL bSelf, CSessMessage* lpMsg)
 {
@@ -195,11 +193,11 @@ CRecvMsg::~CRecvMsg(void)
 }
 
 // class CRecvMsgThread
-CRecvMsgThread::CRecvMsgThread(CIUSocket* socketClient) : 
-m_SocketClient(socketClient), 
+CRecvMsgThread::CRecvMsgThread() : 
 m_bUIEnable(false),
 m_seq(0), 
-m_hProxyWnd(NULL)
+m_hProxyWnd(NULL),
+m_bNetError(false)
 {
 	
 }
@@ -250,7 +248,7 @@ void CRecvMsgThread::Run()
 //
 //	//CRecvChatMessage* pCurrentChatMessage = NULL;
 //
-//	////ÏÈ´¦Àí»º´æµÄÏûÏ¢
+//	////å…ˆå¤„ç†ç¼“å­˜çš„æ¶ˆæ¯
 //	//::EnterCriticalSection(&m_csCacheChatMsg);
 //	//while(m_listCacheChatMsg.size() > 0)
 //	//{
@@ -263,16 +261,29 @@ void CRecvMsgThread::Run()
 //
 //}
 
-BOOL CRecvMsgThread::AddMsgData(const std::string& pMsgData)
+void CRecvMsgThread::AddMsgData(const std::string& pMsgData)
 {
 	if (pMsgData.empty())
-		return FALSE;
+		return;
+
+    //æ”¶åˆ°æ•°æ®å°±è®¤ä¸ºç½‘ç»œæ²¡æœ‰é”™è¯¯
+    m_bNetError = false;
 
     std::lock_guard<std::mutex> guard(m_mtItems);
     m_listItems.push_back(pMsgData);
     m_cvItems.notify_one();
   	
-	return TRUE;
+	return;
+}
+
+void CRecvMsgThread::NotifyNetError()
+{
+    //å·²ç»æœ‰é”™è¯¯äº†ï¼Œå°±ä¸è¦å‘é€é‡å¤æ¶ˆæ¯äº†
+    if (!m_bNetError)
+    {
+        m_bNetError = true;
+        ::PostMessage(m_hProxyWnd, FMG_MSG_NET_ERROR, 0, 0);
+    }       
 }
 
 void CRecvMsgThread::DelAllMsgData()
@@ -282,13 +293,13 @@ void CRecvMsgThread::DelAllMsgData()
     m_listItems.clear();
 }
 
-//Õâ¸öº¯ÊıÔÚÖ÷Ïß³ÌÀïÃæµ÷ÓÃ£¬ËùÒÔĞèÒªÀûÓÃ»¥³âÌå±£»¤ÆğÀ´
+//è¿™ä¸ªå‡½æ•°åœ¨ä¸»çº¿ç¨‹é‡Œé¢è°ƒç”¨ï¼Œæ‰€ä»¥éœ€è¦åˆ©ç”¨äº’æ–¥ä½“ä¿æŠ¤èµ·æ¥
 void CRecvMsgThread::EnableUI(bool bEnable)
 {
     std::lock_guard<std::mutex> guard(m_mtUIEnable);
     m_bUIEnable = bEnable;
 
-    //ÏÈ´¦Àí»º´æµÄÁÄÌìÏûÏ¢
+    //å…ˆå¤„ç†ç¼“å­˜çš„èŠå¤©æ¶ˆæ¯
     for (const auto& iter : m_listCachedChatMsg)
     {
         HandleChatMessage(iter.senderid, iter.targetid, iter.strChatMsg);
@@ -306,7 +317,7 @@ void CRecvMsgThread::EnableUI(bool bEnable)
 
 BOOL CRecvMsgThread::HandleMessage(const std::string& strMsg)
 {
-    BinaryReadStream readStream(strMsg.c_str(), strMsg.length());
+    net::BinaryStreamReader readStream(strMsg.c_str(), strMsg.length());
     int32_t cmd;
     if (!readStream.ReadInt32(cmd))
     {
@@ -328,34 +339,34 @@ BOOL CRecvMsgThread::HandleMessage(const std::string& strMsg)
 
     switch (cmd)
     {
-        //ĞÄÌø°ü²»´¦Àí
-        case msg_type_heartbeart:
+        //å¿ƒè·³åŒ…ä¸å¤„ç†
+        case msg_type_heartbeat:
             break;
-            //×¢²á
+        //æ³¨å†Œ
         case msg_type_register:
             HandleRegisterMessage(data);
             break;
-            //µÇÂ¼
+        //ç™»å½•
         case msg_type_login:
             HandleLoginMessage(data);
             break;
-            //ÓÃ»§ĞÅÏ¢
+        //ç”¨æˆ·ä¿¡æ¯
         case msg_type_getofriendlist:
-            HandleUserBasicInfo(data);
+            HandleFriendListInfo(data);
             break;
-        //»ñÈ¡Èº³ÉÔ±ĞÅÏ¢
+        //è·å–ç¾¤æˆå‘˜ä¿¡æ¯
         case msg_type_getgroupmembers:
             HandleGroupBasicInfo(data);
             break;
-            //²éÕÒÓÃ»§½á¹û
+        //æŸ¥æ‰¾ç”¨æˆ·ç»“æœ
         case msg_type_finduser:
             HandleFindFriendMessage(data);
             break;
-            //¼ÓºÃÓÑÉêÇë»òÉ¾³ıºÃÓÑ»ò¼ÓÈº»òÍËÈº
+        //åŠ å¥½å‹ç”³è¯·æˆ–åˆ é™¤å¥½å‹æˆ–åŠ ç¾¤æˆ–é€€ç¾¤
         case msg_type_operatefriend:
             CacheNotifyMsg(data);
             break;
-        //ÓÃ»§ĞÅÏ¢·¢Éú±ä¸ü
+        //ç”¨æˆ·ä¿¡æ¯å‘ç”Ÿå˜æ›´
         case msg_type_userstatuschange:
         {
             int32_t targetId;
@@ -369,22 +380,22 @@ BOOL CRecvMsgThread::HandleMessage(const std::string& strMsg)
     
 		    break;
         
-        //¸üĞÂ¸öÈËĞÅÏ¢
+        //æ›´æ–°ä¸ªäººä¿¡æ¯
         case msg_type_updateuserinfo:
             HandleUpdateLogonUserInfoMessage(data);
             break;
 
-        //ĞŞ¸ÄÃÜÂë
+        //ä¿®æ”¹å¯†ç 
         case msg_type_modifypassword:
             HandleModifyPasswordResult(data);
             break;
 
-        //´´½¨Èº
+        //åˆ›å»ºç¾¤
         case msg_type_creategroup:
             HandleCreateNewGroupResult(data);
             break;
 
-            //ÁÄÌìÏûÏ¢
+            //èŠå¤©æ¶ˆæ¯
         case msg_type_chat:
         {
             int32_t senderId;
@@ -404,9 +415,30 @@ BOOL CRecvMsgThread::HandleMessage(const std::string& strMsg)
         }
             break;
 
-            //±»ÌßÏÂÏß
+            //è¢«è¸¢ä¸‹çº¿
         case msg_type_kickuser:
             ::PostMessage(m_hProxyWnd, FMG_MSG_SELF_STATUS_CHANGE, 0, 0);
+            break;
+            
+            //æˆªå±æ•°æ®
+        case msg_type_remotedesktop:
+        {
+            std::string bmpHeader;
+            size_t bmpHeaderlength;
+            if (!readStream.ReadString(&bmpHeader, 0, bmpHeaderlength))
+                break;
+
+            std::string bmpData;
+            size_t bmpDatalength;
+            if (!readStream.ReadString(&bmpData, 0, bmpDatalength))
+                break;
+
+            int32_t target;
+            if (!readStream.ReadInt32(target))
+                break;
+
+            HandleScreenshotMessage(target, bmpHeader, bmpData);
+         }
             break;
 
 
@@ -493,15 +525,60 @@ BOOL CRecvMsgThread::HandleLoginMessage(const std::string& strMsg)
         pLoginResult->m_LoginResultCode = LOGIN_PASSWORD_ERROR;
     else
         pLoginResult->m_LoginResultCode = LOGIN_FAILED;
-    //m_lpUserMgrÎªÒ°Ö¸Õë
+    //m_lpUserMgrä¸ºé‡æŒ‡é’ˆ
     ::PostMessage(m_hProxyWnd, FMG_MSG_LOGIN_RESULT, 0, (LPARAM)pLoginResult);
 	
     return TRUE;
 }
 
-BOOL CRecvMsgThread::HandleUserBasicInfo(const std::string& strMsg)
+BOOL CRecvMsgThread::HandleFriendListInfo(const std::string& strMsg)
 {
-	Json::Reader JsonReader;
+    /*
+    {
+    "code": 0,
+    "msg": "ok",
+    "userinfo": [
+        {
+            "teamindex": 0,
+            "teamname": "My Friends",
+            "members": [
+                {
+                    "userid": 4,
+                    "username": "13811411052",
+                    "nickname": "bj_man",
+                    "facetype": 2,
+                    "customface": "",
+                    "gender": 0,
+                    "birthday": 19900101,
+                    "signature": "",
+                    "address": "",
+                    "phonenumber": "",
+                    "mail": "",
+                    "clienttype": 0,
+                    "status": 0
+                },
+                {
+                    "userid": 5,
+                    "username": "15618326596",
+                    "nickname": "Half",
+                    "facetype": 0,
+                    "customface": "",
+                    "gender": 0,
+                    "birthday": 19900101,
+                    "signature": "",
+                    "address": "",
+                    "phonenumber": "",
+                    "mail": "",
+                    "clienttype": 0,
+                    "status": 0
+                }
+            ]
+        }
+    ]
+}
+    */
+    
+    Json::Reader JsonReader;
 	Json::Value JsonRoot;
     if (!JsonReader.parse(strMsg, JsonRoot))
 	{
@@ -511,45 +588,65 @@ BOOL CRecvMsgThread::HandleUserBasicInfo(const std::string& strMsg)
 	if (JsonRoot["code"].isNull() || JsonRoot["code"].asInt() != 0 || !JsonRoot["userinfo"].isArray())
 		return FALSE;
 
-	CIULog::Log(LOG_NORMAL, __FUNCSIG__, "Recv user basic info, info count=%u:", JsonRoot["userinfo"].size());
+	LOG_INFO("Recv user basic info, info count=%u:", JsonRoot["userinfo"].size());
 
 	CUserBasicInfoResult* pUserBasicInfoResult = new CUserBasicInfoResult();
 	UserBasicInfo* pUserBasicInfo = NULL;
-	for (UINT i = 0; i < JsonRoot["userinfo"].size(); ++i)
+    UINT nTeamCount = (UINT)JsonRoot["userinfo"].size();
+
+    std::string strTeamName;
+    for (UINT i = 0; i < nTeamCount; ++i)
 	{
-		pUserBasicInfo = new UserBasicInfo();
-		//memset(pUserBasicInfo, 0, sizeof(UserBasicInfo));
+        strTeamName = JsonRoot["userinfo"][(UINT)i]["teamname"].asString();
 
-		pUserBasicInfo->uAccountID = JsonRoot["userinfo"][(UINT)i]["userid"].asUInt();
+        std::list<UserBasicInfo*> friendList;        
 
-		//FIXME: ÎªÁËµ÷ÊÔ·½±ã¼ÓÉÏuserid
-		sprintf_s(pUserBasicInfo->szAccountName, 32, "%s - %d", JsonRoot["userinfo"][(UINT)i]["username"].asString().c_str(), pUserBasicInfo->uAccountID);
-		//ÕË»§Ãû
-		//strcpy_s(pUserBasicInfo->szAccountName, ARRAYSIZE(pUserBasicInfo->szAccountName), pUserInfo[i].user);
-		//êÇ³Æ
-		strcpy_s(pUserBasicInfo->szNickName, ARRAYSIZE(pUserBasicInfo->szNickName), JsonRoot["userinfo"][(UINT)i]["nickname"].asString().c_str());
-        //Ç©Ãû
-        strcpy_s(pUserBasicInfo->szSignature, ARRAYSIZE(pUserBasicInfo->szSignature), JsonRoot["userinfo"][(UINT)i]["signature"].asString().c_str());
-		//µØÖ·
-        strcpy_s(pUserBasicInfo->szAddress, ARRAYSIZE(pUserBasicInfo->szAddress), JsonRoot["userinfo"][(UINT)i]["address"].asString().c_str());
-        //×Ô¶¨ÒåÍ·Ïñ
-        strcpy_s(pUserBasicInfo->customFace, ARRAYSIZE(pUserBasicInfo->customFace), JsonRoot["userinfo"][(UINT)i]["customface"].asString().c_str());
-        //µç»°
-        strcpy_s(pUserBasicInfo->szPhoneNumber, ARRAYSIZE(pUserBasicInfo->szPhoneNumber), JsonRoot["userinfo"][(UINT)i]["phonenumber"].asString().c_str());
-        //ÓÊÏä
-        strcpy_s(pUserBasicInfo->szMail, ARRAYSIZE(pUserBasicInfo->szMail), JsonRoot["userinfo"][(UINT)i]["mail"].asString().c_str());
-        
-        pUserBasicInfo->nStatus = JsonRoot["userinfo"][(UINT)i]["status"].asInt();
-		pUserBasicInfo->clientType = JsonRoot["userinfo"][(UINT)i]["clienttype"].asInt();
-		//Í·ÏñID
-        pUserBasicInfo->uFaceID = JsonRoot["userinfo"][(UINT)i]["facetype"].asInt();
-        //ĞÔ±ğ
-        pUserBasicInfo->nGender = JsonRoot["userinfo"][(UINT)i]["gender"].asInt();
-        //ÉúÈÕ
-        pUserBasicInfo->nBirthday = JsonRoot["userinfo"][(UINT)i]["birthday"].asInt();
+        if (!JsonRoot["userinfo"][(UINT)i]["members"].isArray())
+            continue;
 
-		pUserBasicInfoResult->m_listUserBasicInfo.push_back(pUserBasicInfo);
+        for (UINT j = 0; j < JsonRoot["userinfo"][(UINT)i]["members"].size(); ++j)
+        {
+            pUserBasicInfo = new UserBasicInfo();
+            //memset(pUserBasicInfo, 0, sizeof(UserBasicInfo));
 
+            pUserBasicInfo->uAccountID = JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["userid"].asUInt();
+
+#ifdef _DEBUG
+            //ä¸ºäº†è°ƒè¯•æ–¹ä¾¿åŠ ä¸Šuserid
+            sprintf_s(pUserBasicInfo->szAccountName, 32, "%s - %d", JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["username"].asString().c_str(), pUserBasicInfo->uAccountID);
+#else
+            sprintf_s(pUserBasicInfo->szAccountName, 32, "%s", JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["username"].asString().c_str(), pUserBasicInfo->uAccountID);
+#endif
+            //è´¦æˆ·å
+            //strcpy_s(pUserBasicInfo->szAccountName, ARRAYSIZE(pUserBasicInfo->szAccountName), pUserInfo[i].user);
+            //æ˜µç§°
+            strcpy_s(pUserBasicInfo->szNickName, ARRAYSIZE(pUserBasicInfo->szNickName), JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["nickname"].asString().c_str());
+            //å¤‡æ³¨å
+            strcpy_s(pUserBasicInfo->szMarkName, ARRAYSIZE(pUserBasicInfo->szMarkName), JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["markname"].asString().c_str());
+            //ç­¾å
+            strcpy_s(pUserBasicInfo->szSignature, ARRAYSIZE(pUserBasicInfo->szSignature), JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["signature"].asString().c_str());
+            //åœ°å€
+            strcpy_s(pUserBasicInfo->szAddress, ARRAYSIZE(pUserBasicInfo->szAddress), JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["address"].asString().c_str());
+            //è‡ªå®šä¹‰å¤´åƒ
+            strcpy_s(pUserBasicInfo->customFace, ARRAYSIZE(pUserBasicInfo->customFace), JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["customface"].asString().c_str());
+            //ç”µè¯
+            strcpy_s(pUserBasicInfo->szPhoneNumber, ARRAYSIZE(pUserBasicInfo->szPhoneNumber), JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["phonenumber"].asString().c_str());
+            //é‚®ç®±
+            strcpy_s(pUserBasicInfo->szMail, ARRAYSIZE(pUserBasicInfo->szMail), JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["mail"].asString().c_str());
+
+            pUserBasicInfo->nStatus = JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["status"].asInt();
+            pUserBasicInfo->clientType = JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["clienttype"].asInt();
+            //å¤´åƒID
+            pUserBasicInfo->uFaceID = JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["facetype"].asInt();
+            //æ€§åˆ«
+            pUserBasicInfo->nGender = JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["gender"].asInt();
+            //ç”Ÿæ—¥
+            pUserBasicInfo->nBirthday = JsonRoot["userinfo"][(UINT)i]["members"][(UINT)j]["birthday"].asInt();
+
+            friendList.push_back(pUserBasicInfo);
+        }
+
+        pUserBasicInfoResult->m_mapUserBasicInfo[strTeamName] = friendList;
 	}
 
     ::PostMessage(m_hProxyWnd, FMG_MSG_UPDATE_USER_BASIC_INFO, 0, (LPARAM)pUserBasicInfoResult);
@@ -569,7 +666,7 @@ BOOL CRecvMsgThread::HandleGroupBasicInfo(const std::string& strMsg)
     if (JsonRoot["code"].isNull() || JsonRoot["code"].asInt() != 0 || !JsonRoot["groupid"].isInt() || !JsonRoot["members"].isArray())
         return FALSE;
 
-    CIULog::Log(LOG_NORMAL, __FUNCSIG__, "Recv group member info, groupid=%d, info count=%u:", JsonRoot["groupid"].asInt(), JsonRoot["members"].size());
+    LOG_INFO("Recv group member info, groupid=%d, info count=%u:", JsonRoot["groupid"].asInt(), JsonRoot["members"].size());
 
     CGroupBasicInfoResult* pGroupBasicInfoResult = new CGroupBasicInfoResult();
     pGroupBasicInfoResult->m_groupid = JsonRoot["groupid"].asInt();
@@ -581,30 +678,30 @@ BOOL CRecvMsgThread::HandleGroupBasicInfo(const std::string& strMsg)
 
         pUserBasicInfo->uAccountID = JsonRoot["members"][(UINT)i]["userid"].asUInt();
 
-        //FIXME: ÎªÁËµ÷ÊÔ·½±ã¼ÓÉÏuserid
+        //FIXME: ä¸ºäº†è°ƒè¯•æ–¹ä¾¿åŠ ä¸Šuserid
         sprintf_s(pUserBasicInfo->szAccountName, 32, "%s - %d", JsonRoot["members"][(UINT)i]["username"].asString().c_str(), pUserBasicInfo->uAccountID);
-        //ÕË»§Ãû
+        //è´¦æˆ·å
         //strcpy_s(pUserBasicInfo->szAccountName, ARRAYSIZE(pUserBasicInfo->szAccountName), pUserInfo[i].user);
-        //êÇ³Æ
+        //æ˜µç§°
         strcpy_s(pUserBasicInfo->szNickName, ARRAYSIZE(pUserBasicInfo->szNickName), JsonRoot["members"][(UINT)i]["nickname"].asString().c_str());
-        //Ç©Ãû
+        //ç­¾å
         strcpy_s(pUserBasicInfo->szSignature, ARRAYSIZE(pUserBasicInfo->szSignature), JsonRoot["members"][(UINT)i]["signature"].asString().c_str());
-        //µØÖ·
+        //åœ°å€
         strcpy_s(pUserBasicInfo->szAddress, ARRAYSIZE(pUserBasicInfo->szAddress), JsonRoot["members"][(UINT)i]["address"].asString().c_str());
-        //×Ô¶¨ÒåÍ·Ïñ
+        //è‡ªå®šä¹‰å¤´åƒ
         strcpy_s(pUserBasicInfo->customFace, ARRAYSIZE(pUserBasicInfo->customFace), JsonRoot["members"][(UINT)i]["customface"].asString().c_str());
-        //µç»°
+        //ç”µè¯
         strcpy_s(pUserBasicInfo->szPhoneNumber, ARRAYSIZE(pUserBasicInfo->szPhoneNumber), JsonRoot["members"][(UINT)i]["phonenumber"].asString().c_str());
-        //ÓÊÏä
+        //é‚®ç®±
         strcpy_s(pUserBasicInfo->szMail, ARRAYSIZE(pUserBasicInfo->szMail), JsonRoot["members"][(UINT)i]["mail"].asString().c_str());
 
         pUserBasicInfo->nStatus = JsonRoot["members"][(UINT)i]["status"].asInt();
         pUserBasicInfo->clientType = JsonRoot["members"][(UINT)i]["clienttype"].asInt();
-        //Í·ÏñID
+        //å¤´åƒID
         pUserBasicInfo->uFaceID = JsonRoot["members"][(UINT)i]["facetype"].asInt();
-        //ĞÔ±ğ
+        //æ€§åˆ«
         pUserBasicInfo->nGender = JsonRoot["members"][(UINT)i]["gender"].asInt();
-        //ÉúÈÕ
+        //ç”Ÿæ—¥
         pUserBasicInfo->nBirthday = JsonRoot["members"][(UINT)i]["birthday"].asInt();
 
         pGroupBasicInfoResult->m_listUserBasicInfo.push_back(pUserBasicInfo);
@@ -661,22 +758,29 @@ BOOL CRecvMsgThread::HandleUserStatusNotifyMessage(int targetId, const std::stri
     int type = JsonRoot["type"].asInt();
     CFriendStatus* pFriendStatus = new CFriendStatus();
     pFriendStatus->m_uAccountID = targetId;
-    //ÉÏÏß { "type": 1, "onlinestatus": 1/2/3/4..}
+    //ä¸Šçº¿ { "type": 1, "onlinestatus": 1/2/3/4.., "clienttype": 0/1/2}
     if (type == 1)
     {
-        if (!JsonRoot["onlinestatus"].isNull() && !JsonRoot["onlinestatus"].isInt())
+        pFriendStatus->m_type = 1;
+        
+        if (!JsonRoot["onlinestatus"].isNull() && JsonRoot["onlinestatus"].isInt())
             pFriendStatus->m_nStatus = JsonRoot["onlinestatus"].asInt();
         else
-            pFriendStatus->m_nStatus = 1;
-        pFriendStatus->m_type = 1;
+            pFriendStatus->m_nStatus = 1;       
+
+        if (!JsonRoot["clienttype"].isNull() && JsonRoot["clienttype"].isInt())
+            pFriendStatus->m_nClientType = JsonRoot["clienttype"].asInt();
+        else
+            pFriendStatus->m_nClientType = 0;
+
     }
-    //ÏÂÏß
+    //ä¸‹çº¿
     else if (type == 2)
     {
         pFriendStatus->m_nStatus = 0;
         pFriendStatus->m_type = 2;
     }
-    //¸öÈËêÇ³Æ¡¢Í·Ïñ¡¢Ç©ÃûµÈĞÅÏ¢¸ü¸Ä
+    //ä¸ªäººæ˜µç§°ã€å¤´åƒã€ç­¾åç­‰ä¿¡æ¯æ›´æ”¹
     else if (type == 3)
     {
         pFriendStatus->m_type = 3;
@@ -701,11 +805,11 @@ BOOL CRecvMsgThread::HandleOperateFriendMessage(const std::string& strMsg)
     if (!JsonRoot["userid"].isInt() || !JsonRoot["type"].isInt() != 0 || !JsonRoot["username"].isString())
         return FALSE;
 
-    CIULog::Log(LOG_NORMAL, __FUNCSIG__, "Recv operate friend request");
+    LOG_INFO("Recv operate friend request");
     int userid = JsonRoot["userid"].asInt();
     int type = JsonRoot["type"].asInt();
-    string username = JsonRoot["username"].asString();
-    //ÊÕµ½¼ÓºÃÓÑÇëÇó
+    std::string username = JsonRoot["username"].asString();
+    //æ”¶åˆ°åŠ å¥½å‹è¯·æ±‚
     if (type == 2)
     {
         COperateFriendResult* pOperateFriendResult = new COperateFriendResult();
@@ -716,7 +820,7 @@ BOOL CRecvMsgThread::HandleOperateFriendMessage(const std::string& strMsg)
         ::PostMessage(m_hProxyWnd, FMG_MSG_RECVADDFRIENDREQUSET, 0, (LPARAM)pOperateFriendResult);
         return TRUE;
     }
-    //ÊÕµ½¼ÓºÃÓÑ½á¹û
+    //æ”¶åˆ°åŠ å¥½å‹ç»“æœ
     else if (type == 3)
     {
         if (!JsonRoot["accept"].isInt())
@@ -732,7 +836,7 @@ BOOL CRecvMsgThread::HandleOperateFriendMessage(const std::string& strMsg)
         ::PostMessage(m_hProxyWnd, FMG_MSG_RECVADDFRIENDREQUSET, 0, (LPARAM)pOperateFriendResult);
         return TRUE;
     }
-    //É¾³ıºÃÓÑ»òÕßÍËÈº
+    //åˆ é™¤å¥½å‹æˆ–è€…é€€ç¾¤
     else if (type == 5)
 	{
         COperateFriendResult* pOperateFriendResult = new COperateFriendResult();
@@ -837,7 +941,7 @@ BOOL CRecvMsgThread::HandleTargetInfoChangeMessage(CTargetInfoChangeResult* pRes
 
 BOOL CRecvMsgThread::HandleCreateNewGroupResult(const std::string& strMsg)
 {
-    //{"code":0, "msg": "ok", "groupid": 12345678, "groupname": "ÎÒµÄÈºÃû³Æ"}
+    //{"code":0, "msg": "ok", "groupid": 12345678, "groupname": "æˆ‘çš„ç¾¤åç§°"}
     Json::Reader JsonReader;
     Json::Value JsonRoot;
     if (!JsonReader.parse(strMsg, JsonRoot))
@@ -851,9 +955,21 @@ BOOL CRecvMsgThread::HandleCreateNewGroupResult(const std::string& strMsg)
     strcpy_s(pResult->m_szGroupName, ARRAYSIZE(pResult->m_szGroupName), JsonRoot["groupname"].asCString());
 
    
-    //·¢¸øÖ÷Ïß³Ì
+    //å‘ç»™ä¸»çº¿ç¨‹
     ::PostMessage(m_lpUserMgr->m_hProxyWnd, FMG_MSG_CREATE_NEW_GROUP_RESULT, 0, (LPARAM)pResult);
 
+    return TRUE;
+}
+
+BOOL CRecvMsgThread::HandleScreenshotMessage(int32_t targetId, const std::string& strBmpHeader, const std::string& strBmpData)
+{
+    CScreenshotInfo* pSscreenshotInfo = new CScreenshotInfo();
+    pSscreenshotInfo->m_targetId = targetId;
+    pSscreenshotInfo->m_strBmpHeader = strBmpHeader;
+    pSscreenshotInfo->m_strBmpData = strBmpData;
+
+    //å‘ç»™ä¸»çº¿ç¨‹
+    ::PostMessage(m_lpUserMgr->m_hProxyWnd, FMG_MSG_SCREENSHOT, 0, (LPARAM)pSscreenshotInfo);
     return TRUE;
 }
 
@@ -925,7 +1041,8 @@ BOOL CRecvMsgThread::ParseChatMessage(int32_t senderId, int32_t targetId, const 
 	if (!bRet)
 	{
 		delete lpMsg;
-		::OutputDebugStringA("Unknown message£º");
+        LOG_ERROR("Unknown message, invalid json: %s", strMsg.c_str());
+        ::OutputDebugStringA("Unknown messageï¼š");
 		::OutputDebugStringA(strText.c_str());
 		::OutputDebugStringA("\r\n");
 	}
@@ -933,7 +1050,6 @@ BOOL CRecvMsgThread::ParseChatMessage(int32_t senderId, int32_t targetId, const 
 	{
 		arrMsg.push_back(lpMsg);
 	}
-	
 	
 	return TRUE;
 }
@@ -973,47 +1089,53 @@ BOOL CRecvMsgThread::HandleBuddyMsg(CRecvMsg* lpRecvMsg)
 	
 	tstring strSenderNickName(m_lpUserMgr->GetNickName(nSenderID));
 	tstring strTargetNickName(m_lpUserMgr->GetNickName(nTargetID));
+    //TODO: ä¸´æ—¶ä¼šè¯ä¼šå‘é€è€…æ˜µç§°ä¼šä¸ºç©ºï¼Œåé¢åŠ ä¸Šä¸´æ—¶ä¼šè¯çš„åŠŸèƒ½ä¼šåŠ ä¸Š
+    if (strSenderNickName.empty() || strTargetNickName.empty())
+    {
+        LOG_ERROR(_T("Recv a chat msg, but sender or target nickname is empty, senderID: %u, targetID: %u, senderName: %s, targetName: %s"), nSenderID, nTargetID, strSenderNickName.c_str(), strTargetNickName.c_str());
+        return FALSE;
+    }
 
 	BOOL bGroup = IsGroupTarget(nTargetID);
 	
-	//µ¥ÁÄÏûÏ¢
+	//å•èŠæ¶ˆæ¯
 	if(!bGroup)
 	{
-		//Èç¹ûÄ¿±êIDÊÇ×Ô¼º£¬ÔòÊÇÕı³£µÄºÃÓÑ·¢À´µÄÏûÏ¢
+		//å¦‚æœç›®æ ‡IDæ˜¯è‡ªå·±ï¼Œåˆ™æ˜¯æ­£å¸¸çš„å¥½å‹å‘æ¥çš„æ¶ˆæ¯
 		if(m_lpUserMgr->m_UserInfo.m_uUserID == nTargetID)
 		{
-			//ÏûÏ¢ÀàĞÍ
+			//æ¶ˆæ¯ç±»å‹
 			if(lpMsg->m_nMsgType != CONTENT_TYPE_IMAGE_CONFIRM)
 			{
-				//TODO: ÎªÊ²Ã´ÒªĞ´Á½Ìõ£¿Ö±½ÓĞ´Ò»ÌõºÃÓÑµÄÏûÏ¢¼ÇÂ¼²»ĞĞÂğ£¿
-				WriteBuddyMsgLog(m_lpUserMgr, nSenderID, strSenderNickName.c_str(), FALSE, lpMsg);	// Ğ´ÈëºÃÓÑ·¢ËÍÀ´µÄÏûÏ¢¼ÇÂ¼
-				//WriteBuddyMsgLog(m_lpUserMgr, nTargetID, strTargetNickName.c_str(), FALSE, lpMsg);	// Ğ´ÈëÏûÏ¢¼ÇÂ¼
+				//TODO: ä¸ºä»€ä¹ˆè¦å†™ä¸¤æ¡ï¼Ÿç›´æ¥å†™ä¸€æ¡å¥½å‹çš„æ¶ˆæ¯è®°å½•ä¸è¡Œå—ï¼Ÿ
+				WriteBuddyMsgLog(m_lpUserMgr, nSenderID, strSenderNickName.c_str(), FALSE, lpMsg);	// å†™å…¥å¥½å‹å‘é€æ¥çš„æ¶ˆæ¯è®°å½•
+				//WriteBuddyMsgLog(m_lpUserMgr, nTargetID, strTargetNickName.c_str(), FALSE, lpMsg);	// å†™å…¥æ¶ˆæ¯è®°å½•
 			}
 		}
-		//Èç¹ûÄ¿±êID²»ÊÇ×Ô¼º£¬·¢ËÍÈËIDÊÇ×Ô¼ºÔòÊÇÆäËüÆ½Ì¨Í¬²½µÄÁÄÌìÏûÏ¢
+		//å¦‚æœç›®æ ‡IDä¸æ˜¯è‡ªå·±ï¼Œå‘é€äººIDæ˜¯è‡ªå·±åˆ™æ˜¯å…¶å®ƒå¹³å°åŒæ­¥çš„èŠå¤©æ¶ˆæ¯
 		else if(nSenderID == m_lpUserMgr->m_UserInfo.m_uUserID)
 		{
 			if(lpMsg->m_nMsgType != CONTENT_TYPE_IMAGE_CONFIRM)
 			{
 				WriteBuddyMsgLog(m_lpUserMgr, nTargetID, strSenderNickName.c_str(), TRUE, lpMsg);
-				//WriteBuddyMsgLog(m_lpUserMgr, nSenderID, strSenderNickName.c_str(), FALSE, lpMsg);		// Ğ´ÈëÏûÏ¢¼ÇÂ¼
-				//WriteBuddyMsgLog(m_lpUserMgr, nTargetID, strTargetNickName.c_str(), TRUE, lpMsg);		// Ğ´ÈëÏûÏ¢¼ÇÂ¼
+				//WriteBuddyMsgLog(m_lpUserMgr, nSenderID, strSenderNickName.c_str(), FALSE, lpMsg);		// å†™å…¥æ¶ˆæ¯è®°å½•
+				//WriteBuddyMsgLog(m_lpUserMgr, nTargetID, strTargetNickName.c_str(), TRUE, lpMsg);		// å†™å…¥æ¶ˆæ¯è®°å½•
 			}
 		}
 	}
 	else
 	{
-		//·¢ËÍÈË²»ÊÇ×Ô¼º£¬Ä¿±êÒ²²»ÊÇ×Ô¼º£¬ÔòÊÇÈºÏûÏ¢
+		//å‘é€äººä¸æ˜¯è‡ªå·±ï¼Œç›®æ ‡ä¹Ÿä¸æ˜¯è‡ªå·±ï¼Œåˆ™æ˜¯ç¾¤æ¶ˆæ¯
 		if(lpMsg->m_nMsgType != CONTENT_TYPE_IMAGE_CONFIRM)
 		{
 			WriteGroupMsgLog(m_lpUserMgr, nTargetID, nSenderID, strSenderNickName.c_str(), lpMsg);
 		}	
 	}
 	
-	//TODO: Õâ¸öº¯ÊıµÄÊµ¼Ê×÷ÓÃÊÇ½«ÏûÏ¢Ğ´Èë×î½üÁªÏµÈËÁĞ±íÖĞ£¬º¯ÊıÃûÒª¸Ä£¡£¡
+	//TODO: è¿™ä¸ªå‡½æ•°çš„å®é™…ä½œç”¨æ˜¯å°†æ¶ˆæ¯å†™å…¥æœ€è¿‘è”ç³»äººåˆ—è¡¨ä¸­ï¼Œå‡½æ•°åè¦æ”¹ï¼ï¼
 	ProcessBuddyMsg(lpMsg);
 	
-	// ĞèÒªÏÂÔØÍ¼Æ¬
+	// éœ€è¦ä¸‹è½½å›¾ç‰‡
 	if (IsNeedDownloadPic(lpMsg))
 	{
 		GetChatPic(lpMsg);
@@ -1022,14 +1144,14 @@ BOOL CRecvMsgThread::HandleBuddyMsg(CRecvMsg* lpRecvMsg)
 
 	if(!bGroup)
 	{
-		//ÆäËüÆ½Ì¨Í¬²½µÄÏûÏ¢
+		//å…¶å®ƒå¹³å°åŒæ­¥çš„æ¶ˆæ¯
 		if(m_lpUserMgr->m_UserInfo.m_uUserID == nSenderID)
 		{
 			::PostMessage(m_lpUserMgr->m_hProxyWnd, FMG_MSG_BUDDY_MSG, 0, (LPARAM)lpMsg);
 		}	
 		else
 		{
-			//Õı³£ºÃÓÑ·¢À´µÄÏûÏ¢
+			//æ­£å¸¸å¥½å‹å‘æ¥çš„æ¶ˆæ¯
 			if(nTargetID == m_lpUserMgr->m_UserInfo.m_uUserID)
 				::PostMessage(m_hProxyWnd, FMG_MSG_BUDDY_MSG, 0, (LPARAM)lpMsg);
 			else
@@ -1041,7 +1163,7 @@ BOOL CRecvMsgThread::HandleBuddyMsg(CRecvMsg* lpRecvMsg)
 	}
 	else
 	{
-		//·ÇÆäËûÆ½Ì¨Í¬²½µÄÏûÏ¢£¬ÌáÊ¾ÓÃ»§
+		//éå…¶ä»–å¹³å°åŒæ­¥çš„æ¶ˆæ¯ï¼Œæç¤ºç”¨æˆ·
 		if(nSenderID != m_lpUserMgr->m_UserInfo.m_uUserID)
 			::PostMessage(m_lpUserMgr->m_hProxyWnd, FMG_MSG_GROUP_MSG, 0, (LPARAM)lpMsg);
 	}
@@ -1056,7 +1178,7 @@ BOOL CRecvMsgThread::HandleGroupMsg(CRecvMsg* lpRecvMsg)
 
 	CBuddyMessage* lpMsg = (CBuddyMessage*)lpRecvMsg->m_lpMsg;
 	
-	//Ğ´ÈëÈºÏûÏ¢¼ÇÂ¼
+	//å†™å…¥ç¾¤æ¶ˆæ¯è®°å½•
 	UINT nGroupCode = lpMsg->m_nToUin;
 	UINT nSenderID = lpMsg->m_nFromUin;
 	tstring strNickName = m_lpUserMgr->GetNickName(nSenderID);
@@ -1066,7 +1188,7 @@ BOOL CRecvMsgThread::HandleGroupMsg(CRecvMsg* lpRecvMsg)
 		WriteGroupMsgLog(m_lpUserMgr, nGroupCode, nSenderID, strNickName.c_str(), lpMsg);
 	}
 	
-	//TODO: Õâ¸öº¯ÊıµÄÊµ¼Ê×÷ÓÃÊÇ½«ÏûÏ¢Ğ´Èë×î½üÁªÏµÈËÁĞ±íÖĞ£¬º¯ÊıÃûÒª¸Ä£¡£¡
+	//TODO: è¿™ä¸ªå‡½æ•°çš„å®é™…ä½œç”¨æ˜¯å°†æ¶ˆæ¯å†™å…¥æœ€è¿‘è”ç³»äººåˆ—è¡¨ä¸­ï¼Œå‡½æ•°åè¦æ”¹ï¼ï¼
 	ProcessBuddyMsg(lpMsg);
 
 	::PostMessage(m_lpUserMgr->m_hProxyWnd, FMG_MSG_GROUP_MSG, 0, (LPARAM)lpMsg);
@@ -1084,10 +1206,10 @@ BOOL CRecvMsgThread::HandleSessMsg(CRecvMsg* lpRecvMsg)
 	UINT nUTalkNum = 0;
 	tstring strNickName;
 
-	UINT nGroupCode = GroupId2Code(lpMsg->m_nGroupId);				// Èº±êÊ¶×ª»»µ½Èº´úÂë
+	UINT nGroupCode = GroupId2Code(lpMsg->m_nGroupId);				// ç¾¤æ ‡è¯†è½¬æ¢åˆ°ç¾¤ä»£ç 
 	if (nGroupCode != 0)
 	{
-		RMT_GROUP_DATA* lpGroupData = GetGroupData(nGroupCode);	// È·±£ÈºĞÅÏ¢ÒÑ»ñÈ¡
+		RMT_GROUP_DATA* lpGroupData = GetGroupData(nGroupCode);	// ç¡®ä¿ç¾¤ä¿¡æ¯å·²è·å–
 
 		RMT_BUDDY_DATA* lpBuddyData = GetGMemberData(nGroupCode, lpMsg->m_nFromUin);
 		if (lpBuddyData != NULL)
@@ -1097,9 +1219,9 @@ BOOL CRecvMsgThread::HandleSessMsg(CRecvMsg* lpRecvMsg)
 		}
 	}
 
-	WriteSessMsgLog(m_lpUserMgr, nUTalkNum, strNickName.c_str(), FALSE, lpMsg);		// Ğ´ÈëÏûÏ¢¼ÇÂ¼
+	WriteSessMsgLog(m_lpUserMgr, nUTalkNum, strNickName.c_str(), FALSE, lpMsg);		// å†™å…¥æ¶ˆæ¯è®°å½•
 
-	//if (IsNeedDownloadPic(lpMsg->m_arrContent))	// ĞèÒªÏÂÔØÍ¼Æ¬
+	//if (IsNeedDownloadPic(lpMsg->m_arrContent))	// éœ€è¦ä¸‹è½½å›¾ç‰‡
 	//	StartGetChatPicTask(OP_TYPE_SESS_PIC, lpMsg);
 	//else	
 		::PostMessage(m_lpUserMgr->m_hProxyWnd, FMG_MSG_SESS_MSG, 0, (LPARAM)lpMsg);
@@ -1183,7 +1305,7 @@ RMT_BUDDY_DATA* CRecvMsgThread::GetBuddyData(UINT nUTalkUin)
 
 	if (_T('\0') == lpBuddyData->szNickName[0])
 	{
-		// ¼Ù¶¨êÇ³ÆÒ»¶¨ÄÜ¹»´ÓºÃÓÑÁĞ±í»ñÈ¡µ½£¬ÕâÀï²»´¦Àí
+		// å‡å®šæ˜µç§°ä¸€å®šèƒ½å¤Ÿä»å¥½å‹åˆ—è¡¨è·å–åˆ°ï¼Œè¿™é‡Œä¸å¤„ç†
 	}
 
 	return lpBuddyData;
@@ -1379,7 +1501,7 @@ RMT_BUDDY_DATA* CRecvMsgThread::GetGMemberData(UINT nGroupCode, UINT nUTalkUin)
 
 	if (_T('\0') == lpGMemberData->szNickName[0])
 	{
-		// ¼Ù¶¨êÇ³ÆÒ»¶¨ÄÜ¹»´ÓºÃÓÑÁĞ±í»ñÈ¡µ½£¬ÕâÀï²»´¦Àí
+		// å‡å®šæ˜µç§°ä¸€å®šèƒ½å¤Ÿä»å¥½å‹åˆ—è¡¨è·å–åˆ°ï¼Œè¿™é‡Œä¸å¤„ç†
 	}
 
 	return lpGMemberData;
@@ -1423,7 +1545,7 @@ BOOL CRecvMsgThread::IsNeedDownloadPic(const CBuddyMessage* pBuddyMessage)
 	const std::vector<CContent*>& arrContent = pBuddyMessage->m_arrContent;
 	size_t nSize = arrContent.size();
 	CContent* lpContent = NULL;
-	//TODO: ĞèÒªÏÂÔØÍ¼Æ¬µÄÇé¿öÖ»ÓĞÊÖ»úÆ½Ì¨ºÍµçÄÔÈ·ÈÏÍ¼Æ¬Á½ÖÖÀàĞÍ£¬ËùÒÔÕâÀïµÄ×ÖÌåĞÅÏ¢¿ÉÒÔ¼ò»¯µô£¡
+	//TODO: éœ€è¦ä¸‹è½½å›¾ç‰‡çš„æƒ…å†µåªæœ‰æ‰‹æœºå¹³å°å’Œç”µè„‘ç¡®è®¤å›¾ç‰‡ä¸¤ç§ç±»å‹ï¼Œæ‰€ä»¥è¿™é‡Œçš„å­—ä½“ä¿¡æ¯å¯ä»¥ç®€åŒ–æ‰ï¼
 	for(size_t i=0; i<nSize; ++i)
 	{
 		lpContent = arrContent[i];
@@ -1446,7 +1568,7 @@ void CRecvMsgThread::GetChatPic(CBuddyMessage* pBuddyMessage)
 	char szUtf8Name[MAX_PATH];
 	TCHAR szDestPath[MAX_PATH];
 						
-	//TODO: ĞèÒªÏÂÔØÍ¼Æ¬µÄÇé¿öÖ»ÓĞÊÖ»úÆ½Ì¨ºÍµçÄÔÈ·ÈÏÍ¼Æ¬Á½ÖÖÀàĞÍ£¬ËùÒÔÕâÀïµÄ×ÖÌåĞÅÏ¢¿ÉÒÔ¼ò»¯µô£¡
+	//TODO: éœ€è¦ä¸‹è½½å›¾ç‰‡çš„æƒ…å†µåªæœ‰æ‰‹æœºå¹³å°å’Œç”µè„‘ç¡®è®¤å›¾ç‰‡ä¸¤ç§ç±»å‹ï¼Œæ‰€ä»¥è¿™é‡Œçš„å­—ä½“ä¿¡æ¯å¯ä»¥ç®€åŒ–æ‰ï¼
 	for(size_t i=0; i<nSize; ++i)
 	{
 		lpContent = arrContent[i];
@@ -1457,12 +1579,12 @@ void CRecvMsgThread::GetChatPic(CBuddyMessage* pBuddyMessage)
 		{
 			memset(szUtf8Name, 0, sizeof(szUtf8Name));
 			memset(szDestPath, 0, sizeof(szDestPath));
-            //ÁÄÌìÍ¼Æ¬µÄ¸ñÊ½Îªjpg
+            //èŠå¤©å›¾ç‰‡çš„æ ¼å¼ä¸ºjpg
 			_stprintf_s(szDestPath, ARRAYSIZE(szDestPath), _T("%s"), m_pFMGClient->GetChatPicFullName(lpContent->m_CFaceInfo.m_strFileName.c_str()).c_str());
 			if(!Hootina::CPath::IsFileExist(szDestPath))
 			{
 				pRequest = new CFileItemRequest();
-				UnicodeToUtf8(lpContent->m_CFaceInfo.m_strFilePath.c_str(), szUtf8Name, ARRAYSIZE(szUtf8Name));
+				EncodeUtil::UnicodeToUtf8(lpContent->m_CFaceInfo.m_strFilePath.c_str(), szUtf8Name, ARRAYSIZE(szUtf8Name));
 				
 				strcpy_s(pRequest->m_szUtfFilePath, ARRAYSIZE(pRequest->m_szUtfFilePath), szUtf8Name);
 				_tcscpy_s(pRequest->m_szFilePath, ARRAYSIZE(pRequest->m_szFilePath), szDestPath);
@@ -1497,29 +1619,29 @@ BOOL CRecvMsgThread::ProcessBuddyMsg(CBuddyMessage* lpBuddyMsg)
 		if(lpContent == NULL)
 			continue;
 
-		if (lpContent->m_nType == CONTENT_TYPE_TEXT)							//ÎÄ±¾
+		if (lpContent->m_nType == CONTENT_TYPE_TEXT)							//æ–‡æœ¬
 		{
 			strRecentMsg += lpContent->m_strText.data();
 		}
-		else if (lpContent->m_nType == CONTENT_TYPE_FACE)				//±íÇé
+		else if (lpContent->m_nType == CONTENT_TYPE_FACE)				//è¡¨æƒ…
 		{
 			if(strRecentMsg.GetLength()<MAX_RECENT_MSG_LENGTH && strRecentMsg.GetLength()+4<=MAX_RECENT_MSG_LENGTH)
-				strRecentMsg += _T("[±íÇé]");
+				strRecentMsg += _T("[è¡¨æƒ…]");
 		}
-		else if (lpContent->m_nType == CONTENT_TYPE_SHAKE_WINDOW)			//´°¿Ú¶¶¶¯
+		else if (lpContent->m_nType == CONTENT_TYPE_SHAKE_WINDOW)			//çª—å£æŠ–åŠ¨
 		{
 			if(strRecentMsg.GetLength()<MAX_RECENT_MSG_LENGTH && strRecentMsg.GetLength()+6<=MAX_RECENT_MSG_LENGTH)
-				strRecentMsg += _T("[´°¿Ú¶¶¶¯]");
+				strRecentMsg += _T("[çª—å£æŠ–åŠ¨]");
 		}
-		else if (lpContent->m_nType == CONTENT_TYPE_CHAT_IMAGE)			//Í¼Æ¬
+		else if (lpContent->m_nType == CONTENT_TYPE_CHAT_IMAGE)			//å›¾ç‰‡
 		{
 			if(strRecentMsg.GetLength()<MAX_RECENT_MSG_LENGTH && strRecentMsg.GetLength()+4<=MAX_RECENT_MSG_LENGTH)
-				strRecentMsg += _T("[Í¼Æ¬]");
+				strRecentMsg += _T("[å›¾ç‰‡]");
 		}
-		else if (lpContent->m_nType == CONTENT_TYPE_FILE)			//ÎÄ¼ş
+		else if (lpContent->m_nType == CONTENT_TYPE_FILE)			//æ–‡ä»¶
 		{
 			if(strRecentMsg.GetLength()<MAX_RECENT_MSG_LENGTH && strRecentMsg.GetLength()+4<=MAX_RECENT_MSG_LENGTH)
-				strRecentMsg += _T("[ÎÄ¼ş]");
+				strRecentMsg += _T("[æ–‡ä»¶]");
 		}
 		
 	}
@@ -1541,7 +1663,7 @@ BOOL CRecvMsgThread::ProcessBuddyMsg(CBuddyMessage* lpBuddyMsg)
 		AddItemToRecentSessionList(lpBuddyMsg->m_nToUin, uFaceID, strNickName.c_str(), strRecentMsg, lpBuddyMsg->m_nTime);
 	}
 	
-	//ÈºÏûÏ¢
+	//ç¾¤æ¶ˆæ¯
 	if(IsGroupTarget(lpBuddyMsg->m_nToUin))
 	{
 		strNickName = m_lpUserMgr->GetGroupName(lpBuddyMsg->m_nToUin);

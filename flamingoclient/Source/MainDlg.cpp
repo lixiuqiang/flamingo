@@ -22,6 +22,7 @@
 #include "BuddyInfoDlg.h"
 #include "GroupInfoDlg.h"
 #include "FindFriendDlg.h"
+#include "RemoteDesktopDlg.h"
 #include "AddFriendConfirmDlg.h"
 #include "Updater.h"
 #include "UpdateDlg.h"
@@ -31,7 +32,10 @@
 #include "Startup.h"
 #include "MultiChatMemberSelectionDlg.h"
 #include "ChatDlgCommon.h"
-#include "EncodingUtil.h"
+#include "EncodeUtil.h"
+#include "UIText.h"
+#include "PerformanceCounter.h"
+#include "net/Msg.h"
 
 #pragma comment(lib, "winmm.lib")
 
@@ -41,6 +45,11 @@ extern HWND g_hwndOwner;
 #define RECVCHATMSG_TIMER_ID	  2
 #define ADDFRIENDREQUEST_TIMER_ID 3
 #define EXITAPP_TIMER_ID		  4	
+#define RECONNECT_TIMER_ID        5
+
+//好友项信息浮动窗口宽和高
+#define BUDDYINFOFLOATWND_WIDTH   300
+#define BUDDYINFOFLOATWND_HEIGHT  150
 
 //主菜单各个子菜单索引号
 enum MAIN_PANEL_MEMU
@@ -85,7 +94,7 @@ BOOL CMainDlg::OnIdle()
 	return FALSE;
 }
 
-CMainDlg::CMainDlg(void)
+CMainDlg::CMainDlg(void) : m_LoginDlg(&m_FMGClient)
 {
 	//m_BuddyChatDlg.m_lpFMGClient = &m_FMGClient;
 	m_nLastMsgType = FMG_MSG_TYPE_BUDDY;
@@ -98,12 +107,21 @@ CMainDlg::CMainDlg(void)
 	m_dwLoginTimerId = 0;
 	m_dwMsgTimerId = 0;
 	m_dwAddFriendTimerId = 0;
+    m_dwReconnectTimerId = 0;
+
+    m_bAlreadySendReloginRequest = false;
+
+
+    m_bEnableReconnect = true;
+    m_uReconnectInterval = 3000;
+
 	memset(m_hAddFriendIcon, 0, sizeof(m_hAddFriendIcon));
 
 	m_hDlgIcon = m_hDlgSmallIcon = NULL;
 	memset(&m_stAccountInfo, 0, sizeof(m_stAccountInfo));
 
 	m_pFindFriendDlg = new CFindFriendDlg();
+    m_pRemoteDesktopDlg = new CRemoteDesktopDlg();
 
 	m_nYOffset = 0;
 	m_bFold = TRUE;
@@ -120,11 +138,14 @@ CMainDlg::CMainDlg(void)
 	m_rcTrayIconRect.SetRectEmpty();
 
 	m_nCurSelIndexInMainTab = -1;
+
+    m_nMainPanelStatus = MAINPANEL_STATUS_NOTLOGIN;
 }
 
 CMainDlg::~CMainDlg(void)
 {
 	delete m_pFindFriendDlg;
+    delete m_pRemoteDesktopDlg;
 }
 
 BOOL CMainDlg::OnInitDialog(CWindow wndFocus, LPARAM lInitParam)
@@ -145,11 +166,11 @@ BOOL CMainDlg::OnInitDialog(CWindow wndFocus, LPARAM lInitParam)
 	
 	//去除最大化按钮
 	ModifyStyle(WS_MAXIMIZEBOX, 0);
-	Init();
+	InitUI();
 
-	if(!m_FMGClient.Init())
+	if(!m_FMGClient.InitProxyWnd())
 	{
-		::MessageBox(NULL, _T("初始化失败，Flamingo无法启动！"), _T(""), MB_OK|MB_TOPMOST);
+		::MessageBox(NULL, _T("初始化代理窗口失败，Flamingo无法启动！"), _T(""), MB_OK|MB_TOPMOST);
 		::ExitProcess(0);
 		return FALSE;
 	}
@@ -199,7 +220,8 @@ void CMainDlg::OnSysCommand(UINT nID, CPoint pt)
 {
 	if (nID == SC_MINIMIZE)
 	{
-		ShowWindow(SW_HIDE);
+        m_BuddyInfoFloatWnd.ShowWindow(SW_HIDE);
+        ShowWindow(SW_HIDE);
 		return;
 	}
 
@@ -265,6 +287,21 @@ void CMainDlg::OnTimer(UINT_PTR nIDEvent)
 		else
 			m_TrayIcon.ModifyIcon(m_hAddFriendIcon[1], _T("加好友请求"));
 	}
+    else if (nIDEvent == m_dwReconnectTimerId)
+    {
+        if (!m_bAlreadySendReloginRequest)
+        {
+            long nStatus = m_FMGClient.GetStatus();
+            LoadAppIcon(nStatus);
+            CString strIconInfo;
+            if (nStatus == STATUS_OFFLINE)
+                strIconInfo.Format(_T("%s\r\n%s\r\n"), m_FMGClient.m_UserMgr.m_UserInfo.m_strNickName.c_str(), m_FMGClient.m_UserMgr.m_UserInfo.m_strAccount.c_str());
+
+            m_TrayIcon.ModifyIcon(m_hAppIcon, strIconInfo, 1, TRUE, _T("温馨提示"), _T("您已经掉线，正在帮您重连......"), 3000);
+
+            m_FMGClient.Login();
+        }
+    }
 }
 
 //void CMainDlg::OnSize(UINT nType, CSize size)
@@ -541,9 +578,9 @@ void CMainDlg::OnDestroy()
 	m_FMGClient.m_UserMgr.StoreRecentList();
 
 
-	m_FMGClient.UnInit();
+	m_FMGClient.Uninit();
 
-	UnInit();
+	UninitUI();
 
 	//m_btnSystemSet.DestroyWindow();
 	//m_TrayIcon.RemoveIcon();
@@ -599,7 +636,7 @@ void CMainDlg::CloseDialog(int nVal)
 {
 	if(IsFilesTransferring())
 	{
-		if(IDNO == ::MessageBox(m_hWnd, _T("您还有文件正在传输，确认要退出Flamingo？"), _T("Flamingo"), MB_YESNO|MB_ICONQUESTION))
+		if(IDNO == ::MessageBox(m_hWnd, _T("您还有文件正在传输，确认要退出Flamingo？"), g_strAppTitle.c_str(), MB_YESNO|MB_ICONQUESTION))
 			return;
 	}
 	
@@ -619,6 +656,7 @@ void CMainDlg::CloseDialog(int nVal)
 
 	if(m_ModifyPasswordDlg.IsWindow())
 		m_ModifyPasswordDlg.DestroyWindow();
+
 
 	m_TrayIcon.RemoveIcon();
 	CloseAllDlg();
@@ -943,7 +981,7 @@ BOOL CMainDlg::InitRecentListCtrl()
 	return TRUE;
 }
 
-BOOL CMainDlg::Init()
+BOOL CMainDlg::InitUI()
 {
 	m_SkinDlg.SetBgPic(_T("main_panel_bg.png"), CRect(2, 280, 2, 127));	
 	m_SkinDlg.SetBgColor(RGB(255, 255, 255));
@@ -1106,7 +1144,14 @@ BOOL CMainDlg::Init()
 	m_btnMail.SetIconPic(_T("MidToolBar\\aio_quickbar_msglog.png"));
 	m_btnMail.SubclassWindow(GetDlgItem(IDC_BTN_MAIL));
 	m_btnMail.MoveWindow(10, 100, 22, 20, TRUE);
-	m_btnMail.SetToolTipText(_T("打开我的博客"));
+
+    CIniFile iniFile;
+    CString strIniFile;
+    strIniFile.Format(_T("%sconfig\\flamingo.ini"), g_szHomePath);
+    TCHAR szMyWebsiteLinkTooltip[32];
+    memset(szMyWebsiteLinkTooltip, 0, sizeof(szMyWebsiteLinkTooltip));
+    iniFile.ReadString(_T("ui"), _T("mywebsitetooltiptext"), UI_DEFAULT_MYWEBSITE_TOOLTIP, szMyWebsiteLinkTooltip, ARRAYSIZE(szMyWebsiteLinkTooltip), strIniFile);
+    m_btnMail.SetToolTipText(szMyWebsiteLinkTooltip);
 	
 	//m_btnMsgBox.SetButtonType(SKIN_ICON_BUTTON);
 	//m_btnMsgBox.SetTransparent(TRUE, hDlgBgDC);
@@ -1165,10 +1210,13 @@ BOOL CMainDlg::Init()
 	InitGroupListCtrl();	// 初始化群列表控件
 	InitRecentListCtrl();	// 初始化最近联系人列表控件
 
+    CRect rcBuddyInfoFloatWnd(0, 0, BUDDYINFOFLOATWND_WIDTH, BUDDYINFOFLOATWND_HEIGHT);
+    m_BuddyInfoFloatWnd.Create(m_hWnd, rcBuddyInfoFloatWnd, NULL, WS_POPUP);
+
 	return TRUE;
 }
 
-void CMainDlg::UnInit()
+void CMainDlg::UninitUI()
 {
 	if(m_picHead.IsWindow())
 		m_picHead.DestroyWindow();
@@ -1392,6 +1440,8 @@ bool CMainDlg::StartLogin(BOOL bAutoLogin/* = FALSE*/)
 		if (!bRet)
 			return true;
 
+        m_LoginDlg.SetLoginAccountInfo(&m_stAccountInfo);
+        m_LoginDlg.DoLogin();
 	}
 	else
 	{
@@ -1414,7 +1464,9 @@ bool CMainDlg::StartLogin(BOOL bAutoLogin/* = FALSE*/)
 		m_LoginDlg.GetLoginAccountInfo(&m_stAccountInfo);
 	}
 
-	ShowPanel(FALSE);		// 显示登录面板
+    m_nMainPanelStatus = MAINPANEL_STATUS_LOGINING;
+    
+    ShowPanel(FALSE);		// 显示登录面板
 	ShowWindow(SW_SHOW);
 
 	LoadLoginIcon();
@@ -1422,7 +1474,8 @@ bool CMainDlg::StartLogin(BOOL bAutoLogin/* = FALSE*/)
 
 	m_FMGClient.SetUser(m_stAccountInfo.szUser, m_stAccountInfo.szPwd);
 	
-	m_FMGClient.Login();
+    //已经改成同步登录了
+	//m_FMGClient.Login();
 
     return true;
 }
@@ -1486,7 +1539,7 @@ void CMainDlg::OnMenu_Exit(UINT uNotifyCode, int nID, CWindow wndCtl)
 
 void CMainDlg::OnMenu_Mute(UINT uNotifyCode, int nID, CWindow wndCtl)
 {
-	//TODO: 关闭所有声音（放在一个全局配置项里面）
+    m_FMGClient.m_UserConfig.EnableMute(!m_FMGClient.m_UserConfig.IsEnableMute());
 }
 
 //点击更改个性签名
@@ -1592,7 +1645,14 @@ void CMainDlg::OnBtn_ShowSystemSettingDlg(UINT uNotifyCode, int nID, CWindow wnd
 
 void CMainDlg::OnBtn_OpenMail(UINT uNotifyCode, int nID, CWindow wndCtl)
 {
-    ::ShellExecute(NULL, _T("open"), _T("http://blog.csdn.net/analogous_love"), NULL, NULL, SW_SHOWNORMAL);
+    CIniFile iniFile;
+    CString strIniFile;
+    strIniFile.Format(_T("%sconfig\\flamingo.ini"), g_szHomePath);
+    TCHAR szMyWebsiteLink[512];
+    memset(szMyWebsiteLink, 0, sizeof(szMyWebsiteLink));
+    iniFile.ReadString(_T("ui"), _T("mywebsitelink"), UI_DEFAULT_MYWEBSITE, szMyWebsiteLink, ARRAYSIZE(szMyWebsiteLink), strIniFile);
+
+    ::ShellExecute(NULL, _T("open"), szMyWebsiteLink, NULL, NULL, SW_SHOWNORMAL);
 }
 
 void CMainDlg::OnBtn_ModifyPassword(UINT uNotifyCode, int nID, CWindow wndCtl)
@@ -1723,7 +1783,7 @@ LRESULT CMainDlg::OnBuddyListRButtonUp(LPNMHDR pnmh)
 	GetCursorPos(&pt);
 
 	//::SetForegroundWindow(m_hWnd);
-	NMHDREx* hdr = (NMHDREx*)pnmh;
+    BLNMHDREx* hdr = (BLNMHDREx*)pnmh;
 	CSkinMenu PopupMenu;
 	if(hdr->nPostionFlag == POSITION_ON_ITEM)
 	{
@@ -1753,6 +1813,85 @@ LRESULT CMainDlg::OnBuddyListRButtonUp(LPNMHDR pnmh)
 	return 1;
 }
 
+LRESULT CMainDlg::OnBuddyListHover(LPNMHDR pnmh)
+{
+    RECT rtBuddyInfoFloatWnd;
+    ::GetWindowRect(m_BuddyInfoFloatWnd.m_hWnd, &rtBuddyInfoFloatWnd);
+    
+    BLNMHDREx* hdr = (BLNMHDREx*)pnmh;
+    if (hdr == NULL || hdr->nTeamIndex < 0 || hdr->nItemIndex < 0)
+    {
+        //鼠标不在好友列表上，且不在浮动信息窗口上才隐藏浮动信息窗口
+        POINT ptCursor;
+        ::GetCursorPos(&ptCursor);
+        //算上左右边距的rect
+        RECT rtBuddyInfoFloatWndPlusGap;
+        rtBuddyInfoFloatWndPlusGap.top = rtBuddyInfoFloatWnd.top;
+        rtBuddyInfoFloatWndPlusGap.bottom = rtBuddyInfoFloatWnd.bottom;
+        rtBuddyInfoFloatWndPlusGap.left = rtBuddyInfoFloatWnd.left;
+        rtBuddyInfoFloatWndPlusGap.right = rtBuddyInfoFloatWnd.right + 15;
+        if (!::PtInRect(&rtBuddyInfoFloatWndPlusGap, ptCursor))
+        {
+            m_BuddyInfoFloatWnd.ShowWindow(SW_HIDE);
+            return 0;
+        }
+      
+        return 0;
+    }
+
+    RECT rtMainDlg;
+    ::GetWindowRect(m_hWnd, &rtMainDlg);
+    if (!m_BuddyInfoFloatWnd.IsWindowVisible())
+        m_BuddyInfoFloatWnd.ShowWindow(SW_SHOW);   
+
+    int xLeftBuddyInfoFloatWnd = rtMainDlg.left - rtBuddyInfoFloatWnd.right + rtBuddyInfoFloatWnd.left;
+    //如果主窗口太靠近屏幕左边，信息窗口将显示在主窗口的右边
+    if (rtMainDlg.left < BUDDYINFOFLOATWND_WIDTH)
+        xLeftBuddyInfoFloatWnd = rtMainDlg.right;
+
+    CString strHeadImg = m_BuddyListCtrl.GetBuddyItemHeadPic(hdr->nTeamIndex, hdr->nItemIndex);
+    UINT nBuddyID = m_BuddyListCtrl.GetBuddyItemID(hdr->nTeamIndex, hdr->nItemIndex);
+    m_BuddyInfoFloatWnd.SetHeadImg(strHeadImg);
+    if (nBuddyID >= 0)
+    {
+        CBuddyInfo* pBuddyInfo = m_FMGClient.m_UserMgr.m_BuddyList.GetBuddy(nBuddyID);
+        if (pBuddyInfo != NULL)
+        {
+            m_BuddyInfoFloatWnd.SetDataText(pBuddyInfo->m_strNickName.c_str(),
+                pBuddyInfo->m_strSign.c_str(),
+                pBuddyInfo->m_strEmail.c_str(),
+                pBuddyInfo->m_strAddress.c_str());
+        }      
+    }
+
+    POINT itemStart;
+    itemStart.x = hdr->rtItem.left;
+    itemStart.y = hdr->rtItem.top;
+    ::ClientToScreen(m_BuddyListCtrl.m_hWnd, &itemStart);
+
+    //TODO: 分组高度25和列表项高度55暂且写死,后面改成根据列表显示模式下计算出来
+    //::SetWindowPos(m_BuddyInfoFloatWnd.m_hWnd,
+    //               m_hWnd,
+    //               xLeftBuddyInfoFloatWnd,
+    //               rtMainDlg.top + 200 + (hdr->nTeamIndex + 1) * 25 + hdr->nItemIndex * 55,
+    //               0,
+    //               0,
+    //               SWP_NOSIZE | SWP_SHOWWINDOW);
+
+    ::SetWindowPos(m_BuddyInfoFloatWnd.m_hWnd,
+        m_hWnd,
+        xLeftBuddyInfoFloatWnd,
+        itemStart.y,
+        0,
+        0,
+        SWP_NOSIZE | SWP_SHOWWINDOW);
+
+
+
+
+    return 1;
+}
+
 LRESULT CMainDlg::OnGroupListDblClk(LPNMHDR pnmh)
 {
 	int nTeamIndex, nIndex;
@@ -1772,7 +1911,7 @@ LRESULT CMainDlg::OnGroupListRButtonUp(LPNMHDR pnmh)
 	GetCursorPos(&pt);
 
 	//::SetForegroundWindow(m_hWnd);
-	NMHDREx* hdr = (NMHDREx*)pnmh;
+    BLNMHDREx* hdr = (BLNMHDREx*)pnmh;
 	if(hdr->nPostionFlag == POSITION_ON_ITEM)
 	{
 		CSkinMenu PopupMenu = m_SkinMenu.GetSubMenu(MAIN_PANEL_GROUPLIST_CONTEXT_SUBMENU_INDEX);
@@ -1808,7 +1947,7 @@ LRESULT CMainDlg::OnRecentListDblClk(LPNMHDR pnmh)
 				tstring strNickName = m_RecentListCtrl.GetBuddyItemNickName(nTeamIndex, nIndex);
 				CString strInfo;
 				strInfo.Format(_T("%s已经不是您的好友，请先加对方为好友后再聊天。"), strNickName.c_str());
-				::MessageBox(m_hWnd, strInfo, _T("Flamingo"), MB_OK|MB_ICONINFORMATION);
+				::MessageBox(m_hWnd, strInfo, g_strAppTitle.c_str(), MB_OK|MB_ICONINFORMATION);
 				return 1;
 			}
 			
@@ -1925,7 +2064,7 @@ void CMainDlg::OnBtn_Cancel(UINT uNotifyCode, int nID, CWindow wndCtl)
 	strMainExe.Format(_T("%sFlamingo.exe"), g_szHomePath);
 	if((int)::ShellExecute(NULL, NULL, strMainExe.GetString(), NULL, NULL, SW_SHOW) <= 32)
 	{
-		::MessageBox(NULL, _T("显示登录对话框失败！"), _T("Flamingo"), MB_OK|MB_ICONERROR);
+		::MessageBox(NULL, _T("显示登录对话框失败！"), g_strAppTitle.c_str(), MB_OK|MB_ICONERROR);
 	}
 	//CLoginDlg LoginDlg;
 	//if (LoginDlg.DoModal() != IDOK)	// 显示登录对话框
@@ -2111,20 +2250,20 @@ void CMainDlg::OnEdit_Sign_KillFocus(UINT uNotifyCode, int nID, CWindow wndCtl)
 	strNewText.Trim();
 	if(strNewText.GetLength() > 127)
 	{
-		::MessageBox(m_hWnd, _T("个性签名不能超过127个字符！"), _T("Flamingo"), MB_OK|MB_ICONINFORMATION);
+		::MessageBox(m_hWnd, _T("个性签名不能超过127个字符！"), g_strAppTitle.c_str(), MB_OK|MB_ICONINFORMATION);
 		return;
 	}
 	
 	BOOL bModify = TRUE;
 	if(m_FMGClient.IsOffline())
 	{
-		::MessageBox(m_hWnd, _T("您当前处于离线状态，无法修改个性签名，请上线后重试。"), _T("Flamingo"), MB_OK|MB_ICONINFORMATION);
+		::MessageBox(m_hWnd, _T("您当前处于离线状态，无法修改个性签名，请上线后重试。"), g_strAppTitle.c_str(), MB_OK|MB_ICONINFORMATION);
 	}
 	else
 	{
 		if(!strOldText.IsEmpty() && strNewText.IsEmpty())
 		{
-			if(::MessageBox(m_hWnd, _T("确定要更改个性签名吗？"), _T("Flamingo"), MB_YESNO|MB_ICONQUESTION) != IDYES)
+			if(::MessageBox(m_hWnd, _T("确定要更改个性签名吗？"), g_strAppTitle.c_str(), MB_YESNO|MB_ICONQUESTION) != IDYES)
 			{
 				bModify = FALSE;
 			}
@@ -2155,8 +2294,12 @@ void CMainDlg::OnMenu_Status(UINT uNotifyCode, int nID, CWindow wndCtl)
 
 	//m_FMGClient.ChangeStatus(nNewStatus);
 
-	if(nNewStatus == STATUS_OFFLINE)
-		m_FMGClient.GoOffline();
+    if (nNewStatus == STATUS_OFFLINE)
+    {
+        m_FMGClient.GoOffline();
+        //重连标志清零
+        m_nMainPanelStatus = MAINPANEL_STATUS_USERGOOFFLINE;
+    }
 	else if(nNewStatus == STATUS_ONLINE)
 		m_FMGClient.GoOnline();
 
@@ -2167,7 +2310,7 @@ void CMainDlg::OnBuddyListAddTeam(UINT uNotifyCode, int nID, CWindow wndCtl)
 {
 	if(m_FMGClient.m_UserMgr.m_BuddyList.GetBuddyTeamCount() > 20)
 	{
-		::MessageBox(m_hWnd, _T("分组数量不能超过20个。"), _T("Flamingo"), MB_OK|MB_ICONINFORMATION);
+		::MessageBox(m_hWnd, _T("分组数量不能超过20个。"), g_strAppTitle.c_str(), MB_OK|MB_ICONINFORMATION);
 		return;
 	}
 	
@@ -2189,16 +2332,21 @@ void CMainDlg::OnBuddyListDeleteTeam(UINT uNotifyCode, int nID, CWindow wndCtl)
 
 	if(m_FMGClient.m_UserMgr.m_BuddyList.GetBuddyTeamCount() <= 1)
 	{
-		::MessageBox(m_hWnd, _T("至少得有一个分组。"), _T("Flamingo"), MB_OK|MB_ICONINFORMATION);
+		::MessageBox(m_hWnd, _T("至少得有一个分组。"), g_strAppTitle.c_str(), MB_OK|MB_ICONINFORMATION);
 		return;
 	}
 
-	if(IDYES != ::MessageBox(m_hWnd, _T("删除该分组以后，该组下的好友将移至默认分组中。\n确定要删除该分组吗？"), _T("Flamingo"), MB_YESNO|MB_ICONQUESTION))
+    CString strTeamName = m_BuddyListCtrl.GetBuddyTeamName(nTeamIndex);
+    if (strTeamName == DEFAULT_TEAMNAME)
+    {
+        ::MessageBox(m_hWnd, _T("默认分组不能删除！"), g_strAppTitle.c_str(), MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+
+	if(IDYES != ::MessageBox(m_hWnd, _T("删除该分组以后，该组下的好友将移至默认分组中。\n确定要删除该分组吗？"), g_strAppTitle.c_str(), MB_YESNO|MB_ICONQUESTION))
 		return;
 
-	
-	if(DeleteTeam(nTeamIndex))
-		::PostMessage(m_hWnd, FMG_MSG_UPDATE_BUDDY_LIST, 0, 0);
+    m_FMGClient.DeleteTeam(strTeamName);   
 }
 
 void CMainDlg::OnBuddyListModifyTeamName(UINT uNotifyCode, int nID, CWindow wndCtl)
@@ -2235,28 +2383,26 @@ void CMainDlg::OnMoveBuddyToTeam(UINT uNotifyCode, int nID, CWindow wndCtl)
 	if(pTeamInfo == NULL)
 		return;
 
-	//从原分组中移除
+    CString strOldTeamName;
+	//获取原分组名
 	for(std::vector<CBuddyInfo*>::iterator iter=pTeamInfo->m_arrBuddyInfo.begin(); iter!=pTeamInfo->m_arrBuddyInfo.end(); ++iter)
 	{
 		pBuddyInfo =*iter;
 		if(pBuddyInfo!=NULL && pBuddyInfo->m_uUserID == uUserID)
 		{
-			pTeamInfo->m_arrBuddyInfo.erase(iter);
+            strOldTeamName = pTeamInfo->m_strName.c_str();
 			break;
 		}
 	}
 	
-	//加到目标分组中
+	//获取目标分组名
 	long nTargetIndex = nID-TEAM_MENU_ITEM_BASE;
 	CBuddyTeamInfo* pTargetTeamInfo = m_FMGClient.m_UserMgr.m_BuddyList.GetBuddyTeamByIndex(nTargetIndex);
 	if(pTargetTeamInfo == NULL)
 		return;
+    CString strNewTeamName = pTargetTeamInfo->m_strName.c_str();
 	
-	//改变用户所在分组索引
-	pBuddyInfo->m_nTeamIndex = nTargetIndex;
-	pTargetTeamInfo->m_arrBuddyInfo.push_back(pBuddyInfo);
-
-	::PostMessage(m_hWnd, FMG_MSG_UPDATE_BUDDY_LIST, 0, 0);
+    m_FMGClient.MoveFriendToOtherTeam(uUserID, strOldTeamName, strNewTeamName);
 }
 
 //右键菜单删除好友
@@ -2267,7 +2413,7 @@ void CMainDlg::OnMenu_DeleteFriend(UINT uNotifyCode, int nID, CWindow wndCtl)
 	m_BuddyListCtrl.GetCurSelIndex(nTeamIndex, nBuddyIndex);
 	if(nTeamIndex==-1 || nBuddyIndex==-1)
 	{
-		::MessageBox(m_hWnd, _T("请在需要删除的好友上按下右键菜单！"), _T("Flamingo"), MB_OK|MB_ICONINFORMATION);
+		::MessageBox(m_hWnd, _T("请在需要删除的好友上按下右键菜单！"), g_strAppTitle.c_str(), MB_OK|MB_ICONINFORMATION);
 		return;
 	}
 
@@ -2276,7 +2422,7 @@ void CMainDlg::OnMenu_DeleteFriend(UINT uNotifyCode, int nID, CWindow wndCtl)
 
 	CString strInfo;
 	strInfo.Format(_T("确定要删除%s(%s)吗？"), strMarkName, strNickName);
-	int nRet = ::MessageBox(m_hWnd, strInfo, _T("Flamingo"), MB_YESNO|MB_ICONQUESTION);
+	int nRet = ::MessageBox(m_hWnd, strInfo, g_strAppTitle.c_str(), MB_YESNO|MB_ICONQUESTION);
 	if (IDNO == nRet)
 		return;
 
@@ -2286,7 +2432,7 @@ void CMainDlg::OnMenu_DeleteFriend(UINT uNotifyCode, int nID, CWindow wndCtl)
 
 void CMainDlg::OnClearAllRecentList(UINT uNotifyCode, int nID, CWindow wndCtl)
 {
-	int nRet = ::MessageBox(m_hWnd, _T("清空会话列表后无法恢复，确定要清空会话列表吗？"), _T("Flamingo"), MB_YESNO|MB_ICONWARNING);
+	int nRet = ::MessageBox(m_hWnd, _T("清空会话列表后无法恢复，确定要清空会话列表吗？"), g_strAppTitle.c_str(), MB_YESNO|MB_ICONWARNING);
 	if(nRet != IDYES)
 		return;
 
@@ -2300,11 +2446,11 @@ void CMainDlg::OnDeleteRecentItem(UINT uNotifyCode, int nID, CWindow wndCtl)
 	m_RecentListCtrl.GetCurSelIndex(nTeamIndex, nRecentIndex);
 	if(nTeamIndex==-1 || nRecentIndex==-1)
 	{
-		::MessageBox(m_hWnd, _T("请在需要删除的会话上按下右键菜单！"), _T("Flamingo"), MB_OK|MB_ICONINFORMATION);
+		::MessageBox(m_hWnd, _T("请在需要删除的会话上按下右键菜单！"), g_strAppTitle.c_str(), MB_OK|MB_ICONINFORMATION);
 		return;
 	}
 
-	int nRet = ::MessageBox(m_hWnd, _T("确定要删除该会话吗？"), _T("Flamingo"), MB_YESNO|MB_ICONQUESTION);
+	int nRet = ::MessageBox(m_hWnd, _T("确定要删除该会话吗？"), g_strAppTitle.c_str(), MB_YESNO|MB_ICONQUESTION);
 	if (IDNO == nRet)
 		return;
 
@@ -2345,7 +2491,7 @@ void CMainDlg::OnMenu_ViewBuddyInfoFromRecentList(UINT uNotifyCode, int nID, CWi
 	::PostMessage(m_hWnd, WM_SHOW_BUDDYINFODLG, NULL, nUTalkUin);
 }
 
-void CMainDlg::OnMenu_ModifyBuddyName(UINT uNotifyCode, int nID, CWindow wndCtl)
+void CMainDlg::OnMenu_ModifyBuddyMarkName(UINT uNotifyCode, int nID, CWindow wndCtl)
 {
 	int nTeamIndex, nIndex;
 	m_BuddyListCtrl.GetCurSelIndex(nTeamIndex, nIndex);
@@ -2421,7 +2567,7 @@ void CMainDlg::OnMenu_ExitGroup(UINT uNotifyCode, int nID, CWindow wndCtl)
 		UINT nGroupCode = m_GroupListCtrl.GetBuddyItemID(nTeamIndex, nIndex);
 		CString strPromptInfo;
 		strPromptInfo.Format(_T("确实要退出群[%s(%s)]？"), m_GroupListCtrl.GetBuddyItemMarkName(nTeamIndex, nIndex), m_GroupListCtrl.GetBuddyItemNickName(nTeamIndex, nIndex));
-		if(IDNO == ::MessageBox(m_hWnd, strPromptInfo, _T("Flamingo"), MB_YESNO|MB_ICONQUESTION))
+		if(IDNO == ::MessageBox(m_hWnd, strPromptInfo, g_strAppTitle.c_str(), MB_YESNO|MB_ICONQUESTION))
 			return;
 
 		m_FMGClient.DeleteFriend(nGroupCode);
@@ -2436,11 +2582,41 @@ void CMainDlg::OnMenu_CreateNewGroup(UINT uNotifyCode, int nID, CWindow wndCtl)
 		return;
 }
 
+LRESULT CMainDlg::OnNetError(UINT uMsg, WPARAM wParam, LPARAM lParam)
+{        
+    //重连定时器已经开启，直接退出，避免重复开启
+    if (m_dwReconnectTimerId != 0)
+        return 0;
+    
+    m_FMGClient.m_UserMgr.ResetToOfflineStatus();
+
+    ::SendMessage(m_FMGClient.m_UserMgr.m_hCallBackWnd, FMG_MSG_UPDATE_BUDDY_INFO, 0, (LPARAM)(m_FMGClient.m_UserMgr.m_UserInfo.m_uUserID));
+    ::SendMessage(m_FMGClient.m_UserMgr.m_hCallBackWnd, FMG_MSG_UPDATE_BUDDY_LIST, 0, 0);
+    ::SendMessage(m_FMGClient.m_UserMgr.m_hCallBackWnd, FMG_MSG_UPDATE_RECENT_LIST, 0, 0);
+    ::SendMessage(m_FMGClient.m_UserMgr.m_hCallBackWnd, FMG_MSG_UPDATE_GROUP_LIST, 0, 0);
+
+    //没有开启重连或者用户主动下线也不要重连
+    if (m_bEnableReconnect && m_nMainPanelStatus != MAINPANEL_STATUS_USERGOOFFLINE)
+    {
+        m_nMainPanelStatus = MAINPANEL_STATUS_RECONNECTING;
+        m_dwReconnectTimerId = SetTimer(RECONNECT_TIMER_ID, m_uReconnectInterval, NULL);   
+    }
+    
+    return 1;
+}
+
 // 登录返回消息
 LRESULT CMainDlg::OnLoginResult(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-	long nCode = (long)lParam;
-
+    long nCode = (long)lParam;
+    
+    //重连不成功，清除以发送登录请求包标识，再次发送重连登录数据包
+    if (m_nMainPanelStatus == MAINPANEL_STATUS_RECONNECTING && nCode != LOGIN_SUCCESS)
+    {
+        m_bAlreadySendReloginRequest = false;
+        return 0;
+    }
+    
  	KillTimer(m_dwLoginTimerId);
  	m_dwLoginTimerId = NULL;
 
@@ -2452,15 +2628,43 @@ LRESULT CMainDlg::OnLoginResult(UINT uMsg, WPARAM wParam, LPARAM lParam)
 	{
 	case LOGIN_SUCCESS:				// 登录成功
 		{
-			ShowPanel(TRUE);
+            if (m_dwReconnectTimerId != 0)
+            {
+                KillTimer(m_dwReconnectTimerId);
+                m_dwReconnectTimerId = 0;
+            }
+        
+            ShowPanel(TRUE);
 			ShowWindow(SW_SHOW);
 			Invalidate();
+
+            m_FMGClient.InitNetThreads();
+
+            //读取重连时间间隔
+            CIniFile iniFile;
+            CString strIniFile;
+            strIniFile.Format(_T("%sconfig\\flamingo.ini"), g_szHomePath);
+
+            if (iniFile.ReadInt(_T("server"), _T("enablereconnect"), 1, strIniFile) != 0)
+                m_bEnableReconnect = true;
+            else
+                m_bEnableReconnect = false;
+
+            //如果都不重连，就没必要读取重连时间间隔了
+            if (m_bEnableReconnect)
+            {
+                m_uReconnectInterval = iniFile.ReadInt(_T("server"), _T("reconnectinterval"), 5000, strIniFile);
+                if (m_uReconnectInterval <= 0)
+                    m_uReconnectInterval = 5000;
+            }
 
 			CreateEssentialDirectories();
 			
 			//登录成功以后，获取服务器时间
 			//m_FMGClient.RequestServerTime();
 
+            
+            //TODO: 这里调用时，网络线程一定都启动了吗？
             m_FMGClient.GetFriendList();
 			m_FMGClient.StartCheckNetworkStatusTask();
 			//m_FMGClient.StartHeartbeatTask();
@@ -2499,13 +2703,16 @@ LRESULT CMainDlg::OnLoginResult(UINT uMsg, WPARAM wParam, LPARAM lParam)
 			m_bShowBigHeadPicInSel = m_FMGClient.m_UserConfig.IsEnableBuddyListShowBigHeadPicInSel(); 
 			m_BuddyListCtrl.SetShowBigIconInSel(m_bShowBigHeadPicInSel);
 
-
-			SetWindowPos(NULL, 
-						 m_FMGClient.m_UserConfig.GetMainDlgX(), 
-						 m_FMGClient.m_UserConfig.GetMainDlgY(),
-						 m_FMGClient.m_UserConfig.GetMainDlgWidth(),
-						 m_FMGClient.m_UserConfig.GetMainDlgHeight(), 
-						 SWP_SHOWWINDOW);
+            //重连成功后，保持主窗口原来的位置
+            if (m_nMainPanelStatus != MAINPANEL_STATUS_RECONNECTING)
+            {
+                SetWindowPos(NULL,
+                    m_FMGClient.m_UserConfig.GetMainDlgX(),
+                    m_FMGClient.m_UserConfig.GetMainDlgY(),
+                    m_FMGClient.m_UserConfig.GetMainDlgWidth(),
+                    m_FMGClient.m_UserConfig.GetMainDlgHeight(),
+                    SWP_SHOWWINDOW);
+            }
 	
 
 			m_FMGClient.m_UserMgr.LoadTeamInfo();
@@ -2533,41 +2740,50 @@ LRESULT CMainDlg::OnLoginResult(UINT uMsg, WPARAM wParam, LPARAM lParam)
 			::SetFocus(m_hWnd);
 			m_bAlreadyLogin = TRUE;
 
+            m_nMainPanelStatus = MAINPANEL_STATUS_LOGIN;
+
+            //登录成功也清除该标志位，以便下次重连
+            m_bAlreadySendReloginRequest = false;
 		}
 		break;
 
 	case LOGIN_FAILED:				// 登录失败
 		{
-			MessageBox(_T("网络故障，登录失败！"), _T("Flamingo"), MB_OK);
+			MessageBox(_T("网络故障，登录失败！"), g_strAppTitle.c_str(), MB_OK);
 			StartLogin();
+
+            m_nMainPanelStatus = MAINPANEL_STATUS_NOTLOGIN;
 		}
 		break;
 
 	case LOGIN_UNREGISTERED:
 		{						
-			MessageBox(_T("用户名未注册！"), _T("Flamingo"), MB_OK);
+			MessageBox(_T("用户名未注册！"), g_strAppTitle.c_str(), MB_OK);
 			StartLogin();
-			
+            m_nMainPanelStatus = MAINPANEL_STATUS_NOTLOGIN;
 		}
 		break;
 
 	case LOGIN_PASSWORD_ERROR:		// 密码错误
 		{
-			MessageBox(_T("密码错误！"), _T("Flamingo"), MB_OK);
+			MessageBox(_T("密码错误！"), g_strAppTitle.c_str(), MB_OK);
 			StartLogin();
+            m_nMainPanelStatus = MAINPANEL_STATUS_NOTLOGIN;
 		}
 		break;
 	
 	case LOGIN_SERVER_REFUSED:
 		{
 			ShowPanel(FALSE);		// 显示登录面板
-			MessageBox(_T("服务器拒绝您的登录请求！"), _T("Flamingo"), MB_OK);
+			MessageBox(_T("服务器拒绝您的登录请求！"), g_strAppTitle.c_str(), MB_OK);
 			StartLogin();
+            m_nMainPanelStatus = MAINPANEL_STATUS_NOTLOGIN;
 		}
 
 	case LOGIN_USER_CANCEL_LOGIN:	// 用户取消登录
 		{
 			StartLogin();
+            m_nMainPanelStatus = MAINPANEL_STATUS_NOTLOGIN;
 		}
 		break;
 	}
@@ -2664,8 +2880,12 @@ LRESULT CMainDlg::OnBuddyMsg(UINT uMsg, WPARAM wParam, LPARAM lParam)
 	}
 	else
 	{
-		tstring strFileName = Hootina::CPath::GetAppPath() + _T("Sound\\msg.wav");	// 播放来消息提示音
-		::sndPlaySound(strFileName.c_str(), SND_ASYNC);
+        //是否启用静音
+        if (!m_FMGClient.m_UserConfig.IsEnableMute())
+        {
+            tstring strFileName = Hootina::CPath::GetAppPath() + _T("Sound\\msg.wav");	// 播放来消息提示音
+            ::sndPlaySound(strFileName.c_str(), SND_ASYNC);
+        }
 	}
 
 	std::map<UINT, CBuddyChatDlg*>::iterator iter;
@@ -2746,8 +2966,12 @@ LRESULT CMainDlg::OnGroupMsg(UINT uMsg, WPARAM wParam, LPARAM lParam)
 		{
 			if (lpMsgSender->GetMsgCount() == 1)
 			{
-				tstring strFileName = Hootina::CPath::GetAppPath() + _T("Sound\\msg.wav");	// 播放来消息提示音
-				::sndPlaySound(strFileName.c_str(), SND_ASYNC);
+                //是否启用静音
+                if (!m_FMGClient.m_UserConfig.IsEnableMute())
+                {
+                    tstring strFileName = Hootina::CPath::GetAppPath() + _T("Sound\\msg.wav");	// 播放来消息提示音
+                    ::sndPlaySound(strFileName.c_str(), SND_ASYNC);
+                }               
 			}
 		}
 	}
@@ -2775,8 +2999,12 @@ LRESULT CMainDlg::OnSessMsg(UINT uMsg, WPARAM wParam, LPARAM lParam)
 	if (0 == nUTalkUin || 0 == nMsgId)
 		return 0;
 
-	tstring strFileName = Hootina::CPath::GetAppPath() + _T("Sound\\msg.wav");	// 播放来消息提示音
-	::sndPlaySound(strFileName.c_str(), SND_ASYNC);
+    // 是否启用静音
+    if (!m_FMGClient.m_UserConfig.IsEnableMute())
+    {
+        tstring strFileName = Hootina::CPath::GetAppPath() + _T("Sound\\msg.wav");	// 播放来消息提示音
+        ::sndPlaySound(strFileName.c_str(), SND_ASYNC);
+    }
 
 	std::map<UINT, CSessChatDlg*>::iterator iter;
 	iter = m_mapSessChatDlg.find(nUTalkUin);
@@ -2827,8 +3055,12 @@ LRESULT CMainDlg::OnStatusChangeMsg(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 	if (bOnline)	// 播放好友上线声音
 	{
-		tstring strFileName = Hootina::CPath::GetAppPath() + _T("Sound\\Global.wav");
-		::sndPlaySound(strFileName.c_str(), SND_ASYNC);
+        // 是否启用静音
+        if (!m_FMGClient.m_UserConfig.IsEnableMute())
+        {
+            tstring strFileName = Hootina::CPath::GetAppPath() + _T("Sound\\Global.wav");
+            ::sndPlaySound(strFileName.c_str(), SND_ASYNC);
+        }
 	}
 
 	int nTeamIndex, nIndex;	// 获取好友项索引
@@ -2852,12 +3084,12 @@ LRESULT CMainDlg::OnStatusChangeMsg(UINT uMsg, WPARAM wParam, LPARAM lParam)
 	// 设置好友在线状态并启动上线动画
 	m_BuddyListCtrl.SetBuddyItemOnline(nTeamIndex, nIndex, bOnline, TRUE);
 
-	if(lpBuddyInfo->m_nStatus == STATUS_MOBILE_ONLINE)
+    if (lpBuddyInfo->m_nStatus == online_type_android_cellular || lpBuddyInfo->m_nStatus == online_type_android_wifi)
 	{
 		strThumbPath.Format(_T("%sImage\\mobile_online.png"), g_szHomePath);
 		m_BuddyListCtrl.SetBuddyItemMobilePic(nTeamIndex, nIndex, strThumbPath, TRUE);
 	}
-	else
+    else if (lpBuddyInfo->m_nStatus == online_type_offline || lpBuddyInfo->m_nStatus == online_type_pc_invisible)
 	{
 		strThumbPath.Format(_T("%sImage\\mobile_online.png"), g_szHomePath);
 		m_BuddyListCtrl.SetBuddyItemMobilePic(nTeamIndex, nIndex, strThumbPath, FALSE);
@@ -2876,6 +3108,112 @@ LRESULT CMainDlg::OnKickMsg(UINT uMsg, WPARAM wParam, LPARAM lParam)
 	MessageBox(lpszReason, _T("提示"), MB_OK);
 	PostMessage(WM_CLOSE);
 	return 0;
+}
+
+LRESULT CMainDlg::OnScreenshotMsg(UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    //CScreenshotInfo* pScreenshotInfo = (CScreenshotInfo*)lParam;
+    //if (pScreenshotInfo == NULL)
+    //    return 0;
+    
+    if (!m_pRemoteDesktopDlg->IsWindow())
+    {
+        m_pRemoteDesktopDlg->m_pFMGClient = &m_FMGClient;
+        m_pRemoteDesktopDlg->Create(m_hWnd, 0);       
+    }
+
+    
+
+    //BITMAPINFOHEADER*	bmpHeader = (BITMAPINFOHEADER*)pScreenshotInfo->m_strBmpHeader.c_str();
+
+    //const char* bmpbuf = pScreenshotInfo->m_strBmpData.c_str();
+
+    m_pRemoteDesktopDlg->ShowWindow(SW_SHOW);
+    return 0;
+
+    //HDC hdc = ::GetDC(m_pRemoteDesktopDlg->m_hWnd);
+    //BITMAPINFO* bmpinfo = (BITMAPINFO*)bmpHeader;//位图信息 
+    //HBITMAP hbitmap = CreateDIBitmap(hdc, bmpHeader, CBM_INIT, bmpbuf, bmpinfo, DIB_RGB_COLORS);
+
+    //PBITMAPINFO bmpInf = (PBITMAPINFO)pScreenshotInfo->m_strBmpHeader.c_str();
+    //m_pRemoteDesktopDlg->MoveWindow(0, 0, bmpInf->bmiHeader.biWidth - 200, bmpInf->bmiHeader.biHeight - 200, FALSE);
+
+    //CClientDC dc(m_pRemoteDesktopDlg->m_hWnd);
+
+    //int nPaletteSize = 0;
+    //BYTE* buf = ((BYTE*)bmpInf) +
+    //    sizeof(BITMAPINFOHEADER) +
+    //    sizeof(RGBQUAD)*nPaletteSize;
+
+    //int nOffset;
+    //BYTE r, g, b;
+    //int nWidth = bmpInf->bmiHeader.biWidth*bmpInf->bmiHeader.biBitCount / 8;
+    //nWidth = ((nWidth + 3) / 4) * 4; //4字节对齐
+
+    ////if (bmpInf->bmiHeader.biBitCount == 8)
+    ////{
+    ////    for (int i = 0; i<bmpInf->bmiHeader.biHeight; i++)
+    ////    {
+    ////        for (int j = 0; j<bm.bmWidth; j++)
+    ////        {
+    ////            RGBQUAD rgbQ;
+    ////            rgbQ = bmpInf->bmiColors[buf[i*nWidth + j]];
+    ////            dc.SetPixel(j, bm.bmHeight - i, RGB(rgbQ.rgbRed, rgbQ.rgbGreen, rgbQ.rgbBlue)); //测试显示
+    ////        }
+    ////    }
+    ////}
+    ////else if (bmpInf->bmiHeader.biBitCount == 16)
+    ////{
+    ////    for (int i = 0; i<bm.bmHeight; i++)
+    ////    {
+    ////        nOffset = i*nWidth;
+    ////        for (int j = 0; j<bm.bmWidth; j++)
+    ////        {
+    ////            b = buf[nOffset + j * 2] & 0x1F;
+    ////            g = buf[nOffset + j * 2] >> 5;
+    ////            g |= (buf[nOffset + j * 2 + 1] & 0x03) << 3;
+    ////            r = (buf[nOffset + j * 2 + 1] >> 2) & 0x1F;
+
+    ////            r *= 8;
+    ////            b *= 8;
+    ////            g *= 8;
+
+    ////            dc.SetPixel(j, bm.bmHeight - i, RGB(r, g, b)); //测试显示
+    ////        }
+    ////    }
+    ////}
+    ////else if (bmpInf->bmiHeader.biBitCount == 24)
+    ////{
+    ////    for (int i = 0; i<bm.bmHeight; i++)
+    ////    {
+    ////        nOffset = i*nWidth;
+    ////        for (int j = 0; j<bm.bmWidth; j++)
+    ////        {
+    ////            b = buf[nOffset + j * 3];
+    ////            g = buf[nOffset + j * 3 + 1];
+    ////            r = buf[nOffset + j * 3 + 2];
+
+    ////            dc.SetPixel(j, bm.bmHeight - i, RGB(r, g, b)); //测试显示
+    ////        }
+    ////    }
+    ////}
+    ///*else*/ if (bmpInf->bmiHeader.biBitCount == 32)
+    //{
+    //    for (int i = 0; i<bmpInf->bmiHeader.biHeight; i++)
+    //    {
+    //        nOffset = i*nWidth;
+    //        for (int j = 0; j<bmpInf->bmiHeader.biWidth; j++)
+    //        {
+    //            b = buf[nOffset + j * 4];
+    //            g = buf[nOffset + j * 4 + 1];
+    //            r = buf[nOffset + j * 4 + 2];
+
+    //            dc.SetPixel(j, bmpInf->bmiHeader.biHeight - i, RGB(r, g, b)); //测试显示
+    //        }
+    //    }
+    //}
+    //
+    //return 0;
 }
 
 // 群系统消息
@@ -3072,7 +3410,7 @@ LRESULT CMainDlg::OnUpdateChatDlgOnlineStatus(UINT uMsg, WPARAM wParam, LPARAM l
 #ifndef _DEBUG
 		if(pBuddyChatDlg == NULL)
 		{
-			CIULog::Log(LOG_ERROR, __FUNCSIG__, _T("Why 0x%08x is null pointer of a chat dlg？"), pBuddyChatDlg);
+			LOG_ERROR("Why 0x%08x is null pointer of a chat dlg？", pBuddyChatDlg);
 			return 0;
 		}
 #endif
@@ -3084,7 +3422,7 @@ LRESULT CMainDlg::OnUpdateChatDlgOnlineStatus(UINT uMsg, WPARAM wParam, LPARAM l
 #ifndef _DEBUG
 		if(!pBuddyChatDlg->IsWindow())
 		{
-			CIULog::Log(LOG_ERROR, __FUNCSIG__, _T("Why 0x%08x is a invalid window of a chat dlg？"), pBuddyChatDlg);
+			LOG_ERROR("Why 0x%08x is a invalid window of a chat dlg？", pBuddyChatDlg);
 			return 0;
 		}
 #endif
@@ -3351,7 +3689,7 @@ LRESULT CMainDlg::OnSendAddFriendRequestResult(UINT uMsg, WPARAM wParam, LPARAM 
 {
 	if(wParam == ADD_FRIEND_FAILED)
 	{
-		::MessageBox(m_hWnd, _T("网络故障，发送加好友请求失败，请稍后重试！"), _T("Flamingo"), MB_OK|MB_ICONERROR);
+		::MessageBox(m_hWnd, _T("网络故障，发送加好友请求失败，请稍后重试！"), g_strAppTitle.c_str(), MB_OK|MB_ICONERROR);
 	}
 
 	return 1;
@@ -3375,11 +3713,11 @@ LRESULT CMainDlg::OnRecvAddFriendRequest(UINT uMsg, WPARAM wParam, LPARAM lParam
 	pAddFriendInfo->uAccountID = pResult->m_uAccountID;
 
 	TCHAR szData[64] = {0};
-	Utf8ToUnicode(pResult->m_szAccountName, szData, ARRAYSIZE(szData));
+    EncodeUtil::Utf8ToUnicode(pResult->m_szAccountName, szData, ARRAYSIZE(szData));
 	_tcscpy_s(pAddFriendInfo->szAccountName, ARRAYSIZE(pAddFriendInfo->szAccountName), szData);
 
 	memset(szData, 0, sizeof(szData));
-	Utf8ToUnicode(pResult->m_szNickName, szData, ARRAYSIZE(szData));
+    EncodeUtil::Utf8ToUnicode(pResult->m_szNickName, szData, ARRAYSIZE(szData));
 	_tcscpy_s(pAddFriendInfo->szNickName, ARRAYSIZE(pAddFriendInfo->szNickName), szData);
 	
 	if(pAddFriendInfo->nCmd == Agree)
@@ -3394,8 +3732,12 @@ LRESULT CMainDlg::OnRecvAddFriendRequest(UINT uMsg, WPARAM wParam, LPARAM lParam
 
 	m_FMGClient.m_aryAddFriendInfo.push_back(pAddFriendInfo);
 
-	tstring strFileName(Hootina::CPath::GetAppPath() + _T("Sound\\system.wav"));	// 播放加好友提示音
-	::sndPlaySound(strFileName.c_str(), SND_ASYNC);
+    // 是否启用静音
+    if (!m_FMGClient.m_UserConfig.IsEnableMute())
+    {
+        tstring strFileName(Hootina::CPath::GetAppPath() + _T("Sound\\system.wav"));	// 播放加好友提示音
+        ::sndPlaySound(strFileName.c_str(), SND_ASYNC);
+    }
 	
 	m_dwAddFriendTimerId = SetTimer(ADDFRIENDREQUEST_TIMER_ID, ::GetCaretBlinkTime(), NULL);
 	
@@ -3408,7 +3750,7 @@ LRESULT CMainDlg::OnDeleteFriendResult(UINT message, WPARAM wParam, LPARAM lPara
 	if(!IsGroupTarget(uAccountID))
 	{
 		if(wParam == DELETE_FRIEND_FAILED)
-			::MessageBox(m_hWnd, _T("因网络问题，删除好友失败，请稍后重试！"), _T("Flamingo"), MB_OK|MB_ICONWARNING);
+			::MessageBox(m_hWnd, _T("因网络问题，删除好友失败，请稍后重试！"), g_strAppTitle.c_str(), MB_OK|MB_ICONWARNING);
 		else if(wParam == DELETE_FRIEND_SUCCESS)
 		{
 			//删完之后已经没有好友了，则不用重新请求好友列表
@@ -3421,12 +3763,12 @@ LRESULT CMainDlg::OnDeleteFriendResult(UINT message, WPARAM wParam, LPARAM lPara
 			//删除成功之后，关闭之前与该好友的聊天窗口
 			ShowBuddyChatDlg(lParam, FALSE);
 
-            //::MessageBox(m_hWnd, _T("删除好友成功！"), _T("Flamingo"), MB_OK | MB_ICONINFORMATION);
+            //::MessageBox(m_hWnd, _T("删除好友成功！"), g_strAppTitle.c_str(), MB_OK | MB_ICONINFORMATION);
 		}
 	}
 	else
 	{
-		::MessageBox(m_hWnd, _T("退群成功！"), _T("Flamingo"), MB_OK|MB_ICONINFORMATION);
+		::MessageBox(m_hWnd, _T("退群成功！"), g_strAppTitle.c_str(), MB_OK|MB_ICONINFORMATION);
 		ShowGroupChatDlg(uAccountID, FALSE);
         m_FMGClient.GetFriendList();
 		::PostMessage(m_hWnd, FMG_MSG_UPDATE_GROUP_LIST, 0, 0);
@@ -3475,9 +3817,12 @@ LRESULT CMainDlg::OnSelfStatusChange(UINT message, WPARAM wParam, LPARAM lParam)
 	long nStatus = (long)lParam;
 	
 	//自己在另外的PC端上线
-	if(nStatus!=STATUS_MOBILE_ONLINE && nStatus!=STATUS_MOBILE_OFFLINE)
+    //处于重连状态，忽略服务器推送的下线通知
+    if (m_nMainPanelStatus != MAINPANEL_STATUS_RECONNECTING && nStatus != STATUS_MOBILE_ONLINE && nStatus != STATUS_MOBILE_OFFLINE)
 	{
 		m_FMGClient.GoOffline();
+        m_FMGClient.Uninit();
+        //ShowPanel(FALSE);
 		CloseAllDlg();
 		
 		ShowWindow(SW_SHOW);
@@ -4292,7 +4637,8 @@ void CMainDlg::UpdateBuddyTreeCtrl(UINT uAccountID/*=0*/)
 
 	for (int i = 0; i < nBuddyTeamCount; i++)
 	{
-		nBuddyCount = lpBuddyList->GetBuddyCount(i);
+        nValidBuddyCount = 0;
+        nBuddyCount = lpBuddyList->GetBuddyCount(i);
 		nOnlineBuddyCount = lpBuddyList->GetOnlineBuddyCount(i);
 		nTeamIndex = 0;
 
@@ -4330,7 +4676,7 @@ void CMainDlg::UpdateBuddyTreeCtrl(UINT uAccountID/*=0*/)
 
 				bMale = lpBuddyInfo->m_nGender!=0 ? FALSE : TRUE;
 				BOOL bGray = FALSE;
-				if(lpBuddyInfo->m_nStatus==STATUS_OFFLINE || lpBuddyInfo->m_nStatus==STATUS_INVISIBLE || lpBuddyInfo->m_nStatus==STATUS_MOBILE_OFFLINE)
+                if (lpBuddyInfo->m_nStatus == online_type_offline || lpBuddyInfo->m_nStatus == online_type_pc_invisible)
 					bGray = TRUE;
 				BOOL bOnlineFlash = FALSE;
 				if(uAccountID == lpBuddyInfo->m_uUserID)
@@ -4355,11 +4701,13 @@ void CMainDlg::UpdateBuddyTreeCtrl(UINT uAccountID/*=0*/)
 				m_BuddyListCtrl.SetBuddyItemNickName(nTeamIndex, nIndex, lpBuddyInfo->m_strNickName.c_str());
 				m_BuddyListCtrl.SetBuddyItemMarkName(nTeamIndex, nIndex, lpBuddyInfo->m_strMarkName.c_str());
 
-				CIULog::Log(LOG_NORMAL, __FUNCSIG__, _T("AccountID=%u, AccountName=%s, NickName=%s, MarkName=%s."), 
-							lpBuddyInfo->m_uUserID,
-							lpBuddyInfo->m_strAccount.c_str(),
-							lpBuddyInfo->m_strNickName.c_str(),
-							lpBuddyInfo->m_strMarkName.c_str());
+    //            BEGIN_PERFORMANCECOUNTER
+				//LOG_INFO(_T("AccountID=%u, AccountName=%s, NickName=%s, MarkName=%s."), 
+				//			lpBuddyInfo->m_uUserID,
+				//			lpBuddyInfo->m_strAccount.c_str(),
+				//			lpBuddyInfo->m_strNickName.c_str(),
+				//			lpBuddyInfo->m_strMarkName.c_str());
+    //            END_PERFORMANCECOUNTER
 				
 				if(nNameStyle == NAME_STYLE_SHOW_NICKNAME)
 				{
@@ -4385,11 +4733,17 @@ void CMainDlg::UpdateBuddyTreeCtrl(UINT uAccountID/*=0*/)
 				
 				//SetBuddyItemOnline最后一个参数是上线动画
 				m_BuddyListCtrl.SetBuddyItemOnline(nTeamIndex, nIndex, !bGray, bOnlineFlash);
-				if(lpBuddyInfo->m_nStatus == STATUS_MOBILE_ONLINE)
+                if (lpBuddyInfo->m_nStatus == online_type_android_cellular || lpBuddyInfo->m_nStatus == online_type_android_wifi)
 				{
 					strThumbPath.Format(_T("%sImage\\mobile_online.png"), g_szHomePath);
-					m_BuddyListCtrl.SetBuddyItemMobilePic(nTeamIndex, nIndex, strThumbPath);
+					m_BuddyListCtrl.SetBuddyItemMobilePic(nTeamIndex, nIndex, strThumbPath, TRUE);
 				}
+                else if (lpBuddyInfo->m_nStatus == online_type_offline || lpBuddyInfo->m_nStatus == online_type_pc_invisible)
+                {
+                    strThumbPath.Format(_T("%sImage\\mobile_online.png"), g_szHomePath);
+                    m_BuddyListCtrl.SetBuddyItemMobilePic(nTeamIndex, nIndex, strThumbPath, FALSE);
+                }
+                    
 				++nValidBuddyCount;
 			}
 		}
@@ -4429,10 +4783,10 @@ void CMainDlg::UpdateGroupTreeCtrl()
 		m_GroupListCtrl.SetBuddyItemMarkName(nTeamIndex, nIndex, lpGroupInfo->m_strName.c_str());
 		m_GroupListCtrl.SetBuddyItemHeadPic(nTeamIndex, nIndex, strFileName.c_str(), FALSE);
 
-		CIULog::Log(LOG_NORMAL, __FUNCSIG__, _T("GroupID=%u, GroupName=%s, GroupName=%s."), 
-					lpGroupInfo->m_nGroupCode,
-					lpGroupInfo->m_strAccount.c_str(),
-					lpGroupInfo->m_strName.c_str());
+		//LOG_INFO(_T("GroupID=%u, GroupName=%s, GroupName=%s."), 
+		//			lpGroupInfo->m_nGroupCode,
+		//			lpGroupInfo->m_strAccount.c_str(),
+		//			lpGroupInfo->m_strName.c_str());
 
 		++nActualGroupCount;
 		
@@ -4689,6 +5043,11 @@ void CMainDlg::OnTrayIcon_RButtunUp()
 	::SetForegroundWindow(m_hWnd);
 
 	CSkinMenu PopupMenu = m_SkinMenu.GetSubMenu(nPos);
+    //根据是否已经静音，修改“关闭所有声音”选项
+    if (m_FMGClient.m_UserConfig.IsEnableMute())
+        PopupMenu.ModifyMenu(ID_MENU_MUTE, MF_BYCOMMAND | MF_STRING /*| MF_POPUP*/, ID_MENU_MUTE, _T("关闭所有声音(已关闭)"));
+    else
+        PopupMenu.ModifyMenu(ID_MENU_MUTE, MF_BYCOMMAND | MF_STRING /*| MF_POPUP*/, ID_MENU_MUTE, _T("关闭所有声音"));
 	PopupMenu.TrackPopupMenu(TPM_LEFTALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, m_hWnd);
 
 	// BUGFIX: See "PRB: Menus for Notification Icons Don't Work Correctly"
@@ -5089,6 +5448,10 @@ void CMainDlg::CloseAllDlg()
 	//销毁我的资料对话框
 	if(m_LogonUserInfoDlg.IsWindow())
 		m_LogonUserInfoDlg.DestroyWindow();
+
+    //好友信息浮窗
+    if (m_BuddyInfoFloatWnd.IsWindow())
+        m_BuddyInfoFloatWnd.DestroyWindow();
 }
 
 // 从菜单ID获取对应的UTalk_STATUS
@@ -5163,7 +5526,7 @@ void CMainDlg::ShowAddFriendConfirmDlg()
 	//自己主动拒绝别人或者被别人拒绝
 	else if(pAddFriendInfo->nCmd==Refuse)
 	{
-		strWindowTitle = _T("Flamingo");
+		strWindowTitle = g_strAppTitle.c_str();
 		strInfo.Format(_T("您或者对方(%s(%s))拒绝了加好友请求。"), pAddFriendInfo->szNickName, pAddFriendInfo->szAccountName);
 		AddFriendConfirmDlg.ShowAgreeButton(FALSE);
 		AddFriendConfirmDlg.ShowRefuseButton(FALSE);
@@ -5172,7 +5535,7 @@ void CMainDlg::ShowAddFriendConfirmDlg()
 	//自己或者别人同意了加好友请求
 	else if(pAddFriendInfo->nCmd==Agree)
 	{		
-		strWindowTitle = _T("Flamingo");
+		strWindowTitle = g_strAppTitle.c_str();
         //群号大于0xFFFFFFF
         if (pAddFriendInfo->uAccountID < 0xFFFFFFF)
 			strInfo.Format(_T("您和%s(%s)已经是好友啦，开始聊天吧。"), pAddFriendInfo->szNickName, pAddFriendInfo->szAccountName);
@@ -5201,36 +5564,6 @@ void CMainDlg::ShowAddFriendConfirmDlg()
 	
 	DELETE_PTR(pAddFriendInfo);
 	m_FMGClient.m_aryAddFriendInfo.erase(m_FMGClient.m_aryAddFriendInfo.end()-1);
-}
-
-BOOL CMainDlg::DeleteTeam(long nTeamIndex)
-{
-	CBuddyTeamInfo* pTeamInfoToDelete = m_FMGClient.m_UserMgr.m_BuddyList.GetBuddyTeamByIndex(nTeamIndex);
-	if(pTeamInfoToDelete == NULL)
-		return FALSE;
-	std::vector<CBuddyTeamInfo*>::iterator iter = m_FMGClient.m_UserMgr.m_BuddyList.m_arrBuddyTeamInfo.begin();
-	//删除分组
-	for(; iter!=m_FMGClient.m_UserMgr.m_BuddyList.m_arrBuddyTeamInfo.end(); ++iter)
-	{
-		if((*iter)->m_nIndex == pTeamInfoToDelete->m_nIndex)
-		{
-			m_FMGClient.m_UserMgr.m_BuddyList.m_arrBuddyTeamInfo.erase(iter);
-			break;
-		}
-	}
-	//将分组中好友移至第一分组中
-	CBuddyTeamInfo* pDefaultTeamInfo = m_FMGClient.m_UserMgr.m_BuddyList.GetBuddyTeamByIndex(0);
-	CBuddyInfo* pBuddyInfo = NULL;
-	for(std::vector<CBuddyInfo*>::iterator it=pTeamInfoToDelete->m_arrBuddyInfo.begin(); it!=pTeamInfoToDelete->m_arrBuddyInfo.end(); ++it)
-	{
-		pBuddyInfo =*it;
-		pDefaultTeamInfo->m_arrBuddyInfo.push_back(pBuddyInfo);
-	}
-
-	pTeamInfoToDelete->m_arrBuddyInfo.clear();
-	delete pTeamInfoToDelete;
-
-	return TRUE;
 }
 
 BOOL CMainDlg::InsertTeamMenuItem(CSkinMenu& popMenu)

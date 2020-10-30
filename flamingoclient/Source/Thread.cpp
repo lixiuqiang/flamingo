@@ -3,6 +3,9 @@
 * zhangyl 2017.03.13
 **/
 #include "stdafx.h"
+
+#include <functional>
+
 #include "Thread.h"
 
 CThread::CThread()
@@ -17,7 +20,8 @@ CThread::~CThread()
 
 void CThread::Start()
 {
-    m_spThread.reset(new std::thread(std::bind(&CThread::ThreadProc, this)));
+    if (!m_spThread)
+        m_spThread.reset(new std::thread(std::bind(&CThread::ThreadProc, this)));
 }
 
 void CThread::ThreadProc()
@@ -27,5 +31,6 @@ void CThread::ThreadProc()
 
 void CThread::Join()
 {
-    m_spThread->join();
+    if (m_spThread && m_spThread->joinable())
+        m_spThread->join();
 }

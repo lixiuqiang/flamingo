@@ -58,12 +58,10 @@ class CUpdateLogonUserInfoRequest;
 class CModifyPasswordRequest;
 class CCreateNewGroupRequest;
 
-class CIUSocket;
-
 class CSendMsgThread : public CThread
 {
 public:
-    CSendMsgThread(CIUSocket* socketClient);
+    CSendMsgThread();
     virtual ~CSendMsgThread(void);
 
 public:
@@ -95,12 +93,16 @@ private:
 	void HandleUpdateLogonUserInfoMessage(const CUpdateLogonUserInfoRequest* pRequest);
 	void HandleModifyPassword(const CModifyPasswordRequest* pModifyPassword);
 	void HandleCreateNewGroup(const CCreateNewGroupRequest* pCreateNewGroup);
+    void HandleOperateTeam(const CAddTeamInfoRequest* pAddNewTeam);
+    void HandleModifyFriendMarkName(const CModifyFriendMakeNameRequest* pModifyFriendMakeNameRequest);
+    void HandleMoveFriendMessage(const CMoveFriendRequest* pMoveFriendRequest);
 
 	BOOL HandleFontInfo(LPCTSTR& p, tstring& strText, std::vector<CContent*>& arrContent);
 	BOOL HandleSysFaceId(LPCTSTR& p, tstring& strText, std::vector<CContent*>& arrContent);
 	BOOL HandleShakeWindowMsg(LPCTSTR& p, tstring& strText, std::vector<CContent*>& arrContent);
 	BOOL HandleCustomPic(LPCTSTR& p, tstring& strText, std::vector<CContent*>& arrContent);
 	BOOL HandleFile(LPCTSTR& p, tstring& strText, std::vector<CContent*>& arrContent);
+    BOOL HandleRemoteDesktop(LPCTSTR& p, tstring& strText, std::vector<CContent*>& arrContent);
 	BOOL CreateMsgContent(const tstring& strChatMsg, std::vector<CContent*>& arrContent);
 	
     //TODO: 这四个函数起始可以合并成一个函数
@@ -117,7 +119,7 @@ private:
 	std::wstring UnicodeToHexStr(const WCHAR* lpStr, BOOL bDblSlash);
 
 public:
-	CFlamingoClient*				m_lpFMGClient;
+	CFlamingoClient*			m_lpFMGClient;
 	CUserMgr*					m_lpUserMgr;
 
 private:
@@ -131,6 +133,4 @@ private:
     std::condition_variable     m_cvItems;
 
     int32_t                     m_seq{};            //包序列号
-
-    CIUSocket*                  m_SocketClient;
 };

@@ -22,8 +22,9 @@ public:
 	~CFlamingoClient(void);
 
 public:
-	BOOL Init();												// 初始化客户端
-	void UnInit();												// 反初始化客户端
+	bool InitProxyWnd();										// 初始化代理窗口
+    bool InitNetThreads();                                      // 初始化网络线程
+	void Uninit();												// 反初始化客户端
 
 	void SetServer(PCTSTR pszServer);
     void SetFileServer(PCTSTR pszServer);
@@ -52,10 +53,16 @@ public:
     void GetGroupMembers(int32_t groupid);                      // 获取群成员
     void ChangeStatus(int32_t nNewStatus);                      // 更改自己的登录状态        
 
-	BOOL FindFriend(PCTSTR pszAccountName, long nType, HWND hReflectionWnd);// 查找好友
+	BOOL FindFriend(PCTSTR pszAccountName, long nType, HWND hReflectionWnd);                // 查找好友
 	BOOL AddFriend(UINT uAccountToAdd);
-	void ResponseAddFriendApply(UINT uAccountID, UINT uCmd);	//回应加好友请求任务
-	BOOL DeleteFriend(UINT uAccountID);							// 删除好友
+	void ResponseAddFriendApply(UINT uAccountID, UINT uCmd);	                            //回应加好友请求任务
+	BOOL DeleteFriend(UINT uAccountID);							                            // 删除好友
+        
+    bool AddNewTeam(PCTSTR pszNewTeamName);                                                 //添加新分组
+    bool DeleteTeam(PCTSTR pszOldTeamName);                                                 //删除分组
+    bool ModifyTeamName(PCTSTR pszNewTeamName, PCTSTR pszOldTeamName);                      //修改分组名称
+    bool MoveFriendToOtherTeam(UINT uUserID, PCTSTR pszOldTeamName, PCTSTR pszNewTeamName); //移动好友至其他分组
+
 	BOOL UpdateLogonUserInfo(PCTSTR pszNickName, 
 							 PCTSTR pszSignature,
 							 UINT uGender,
@@ -70,6 +77,7 @@ public:
 	void SendHeartbeatMessage();
 	void ModifyPassword(PCTSTR pszOldPassword, PCTSTR pszNewPassword);
 	void CreateNewGroup(PCTSTR pszGroupName);
+    void ModifyFriendMarkName(UINT friendID, PCTSTR pszNewMarkName);
 	void ChangeStatus(long nStatus);							// 改变在线状态
 	void UpdateBuddyList();										// 更新好友列表
 	void UpdateGroupList();										// 更新群列表
@@ -137,6 +145,7 @@ public:
 	long ParseBuddyStatus(long nFlag);					// 解析用户在线状态
 	void CacheBuddyStatus();							// 缓存用户在线状态
 	BOOL SetBuddyStatus(UINT uAccountID, long nStatus);
+    BOOL SetBuddyClientType(UINT uAccountID, long nNewClientType);
 
 private:
 	void OnHeartbeatResult(UINT message, WPARAM wParam, LPARAM lParam);
@@ -165,6 +174,7 @@ private:
 	void OnSysGroupMsg(UINT message, WPARAM wParam, LPARAM lParam);
 	void OnStatusChangeMsg(UINT message, WPARAM wParam, LPARAM lParam);
 	void OnKickMsg(UINT message, WPARAM wParam, LPARAM lParam);
+    void OnScreenshotMsg(UINT message, WPARAM wParam, LPARAM lParam);
 	void OnUpdateBuddyNumber(UINT message, WPARAM wParam, LPARAM lParam);
 	void OnUpdateGMemberNumber(UINT message, WPARAM wParam, LPARAM lParam);
 	void OnUpdateGroupNumber(UINT message, WPARAM wParam, LPARAM lParam);
@@ -194,9 +204,7 @@ public:
     CRecvMsgThread                  m_RecvMsgThread;
     CFileTaskThread					m_FileTask;
     CImageTaskThread                m_ImageTask;
-	CIUSocket                       m_SocketClient;
     
-
 	CUserConfig						m_UserConfig;
 
 	std::vector<AddFriendInfo*>		m_aryAddFriendInfo;
